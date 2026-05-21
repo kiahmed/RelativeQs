@@ -1,0 +1,4 @@
+- [ ] Verify that the workspace contains a React + TypeScript frontend project.
+- [ ] Ensure Tailwind CSS, Recharts, and Zustand are included.
+- [ ] Provide a landing page, login page, register page, and dashboard.
+- [ ] Include instructions for installing dependencies and running the app.
