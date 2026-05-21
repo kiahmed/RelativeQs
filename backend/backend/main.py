@@ -5,10 +5,17 @@ import os
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(verbose=True)
-    print("Loaded .env from backend directory")
+    from pathlib import Path
+    dotenv_path = Path(__file__).resolve().parents[1] / ".env"
+    load_dotenv(dotenv_path=dotenv_path, verbose=True)
+    print(f"Loaded .env from {dotenv_path}")
+except ModuleNotFoundError:
+    print("python-dotenv not installed; .env will not be loaded")
 except Exception as e:
     print(f"Could not load .env file: {e}")
+
+print(f"DATA_PROVIDER environment value: {os.getenv('DATA_PROVIDER')}")
+print(f"ALPHAVANTAGE_KEY present: {'ALPHAVANTAGE_KEY' in os.environ and bool(os.environ.get('ALPHAVANTAGE_KEY'))}")
 
 from app.api import router
 from app.ws_manager import WSManager
@@ -50,8 +57,10 @@ async def _poll_and_broadcast():
     try:
         while True:
             snapshot = await market.fetch_snapshot()
+            qqq_score = await market.fetch_qqq_score()
             # broadcast to websocket clients
             await ws_manager.broadcast({"type": "snapshot", "payload": snapshot})
+            await ws_manager.broadcast({"type": "qqq_score", "payload": qqq_score})
             await asyncio.sleep(1.0)  # polling interval (tunable)
     except asyncio.CancelledError:
         return

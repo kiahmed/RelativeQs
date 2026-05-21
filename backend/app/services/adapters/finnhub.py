@@ -16,7 +16,7 @@ from app.config import settings
 class FinnhubAdapter:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.FINNHUB_KEY
-        self.rate_limiter = SimpleRateLimiter("finnhub", calls_per_minute=30)
+        self.rate_limiter = SimpleRateLimiter(calls=30, per_seconds=60)
 
     async def fetch_history(self, symbols: List[str], period: str = "90d", interval: str = "1d") -> Optional[pd.DataFrame]:
         if not self.api_key or aiohttp is None:
@@ -27,7 +27,7 @@ class FinnhubAdapter:
         results = {}
         async with aiohttp.ClientSession() as session:
             for symbol in symbols:
-                await self.rate_limiter.wait_for_slot()
+                await self.rate_limiter.acquire('finnhub')
                 url = (
                     "https://finnhub.io/api/v1/stock/candle"
                     f"?symbol={symbol}&resolution=D&from={start}&to={now}&token={self.api_key}"

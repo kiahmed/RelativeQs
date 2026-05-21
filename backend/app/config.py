@@ -1,11 +1,17 @@
 import os
+from pathlib import Path
 from typing import Optional
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(verbose=True)
-except Exception:
-    pass
+    dotenv_path = Path(__file__).resolve().parents[1] / ".env"
+    loaded = load_dotenv(dotenv_path=dotenv_path, verbose=True)
+    if not loaded:
+        print(f"Could not load .env from {dotenv_path}")
+except ModuleNotFoundError:
+    print("python-dotenv is not installed; environment variables from .env will not be loaded")
+except Exception as e:
+    print(f"Error loading .env: {e}")
 
 
 class Settings:

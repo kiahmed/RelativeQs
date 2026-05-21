@@ -28,6 +28,13 @@ async def snapshot():
     logger.debug("[API] Snapshot data: timestamp=%s", snap.get("timestamp"))
     return snap
 
+@router.get("/qqq-score")
+async def qqq_score(interval: Optional[str] = "1m", period: Optional[str] = "7d"):
+    logger.info("[API] GET /qqq-score interval=%s period=%s", interval, period)
+    score = await market.fetch_qqq_score(period=period or "7d", interval=interval or "1m")
+    logger.debug("[API] QQQ score payload: %s", score)
+    return score
+
 @router.post("/score")
 async def score(payload: dict, normalize: Optional[bool] = None):
     logger.info("[API] POST /score - normalize=%s", normalize)

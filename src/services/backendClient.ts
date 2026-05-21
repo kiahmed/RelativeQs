@@ -1,9 +1,12 @@
 type SnapshotHandler = (payload: any) => void
 
+type QQQScoreHandler = (payload: any) => void
+
 export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
   let ws: WebSocket | null = null
   let reconnect = true
   let onSnapshot: SnapshotHandler | null = null
+  let onQQQScore: QQQScoreHandler | null = null
 
   function connect() {
     if (ws) return
@@ -18,6 +21,9 @@ export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
         const data = JSON.parse(ev.data)
         if (data?.type === 'snapshot' && onSnapshot) {
           onSnapshot(data.payload)
+        }
+        if (data?.type === 'qqq_score' && onQQQScore) {
+          onQQQScore(data.payload)
         }
       } catch (e) {
         console.error('[backendClient] parse error', e)
@@ -52,5 +58,9 @@ export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
     onSnapshot = cb
   }
 
-  return { connect, disconnect, send, onSnapshot: onSnapshotCb }
+  function onQQQScoreCb(cb: QQQScoreHandler | null) {
+    onQQQScore = cb
+  }
+
+  return { connect, disconnect, send, onSnapshot: onSnapshotCb, onQQQScore: onQQQScoreCb }
 }

@@ -28,6 +28,23 @@ export type QQQHealth = {
   summary: string
 }
 
+export type QQQScore = {
+  direction: string
+  raw_score: number
+  probability: number
+  fragility: number
+  provider: string
+  leader_momentum: Record<string, number>
+  mags_momentum: number
+  broadening_momentum: Record<string, number>
+  broadening_avg: number
+  confirmation_momentum: Record<string, number>
+  confirmation_avg: number
+  lead_lag: { symbol: string; bestLag: number; corr: number; lead: boolean }[]
+  lead_signal: number
+  recent_qqq: { t: string; QQQ: number }[]
+}
+
 export type LeadLagSignal = {
   leader: string
   lagger: string

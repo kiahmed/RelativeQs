@@ -15,7 +15,7 @@ class AlpacaAdapter:
     def __init__(self, api_key: Optional[str] = None, secret: Optional[str] = None):
         self.api_key = api_key or settings.ALPACA_KEY
         self.secret = secret or settings.ALPACA_SECRET
-        self.rate_limiter = SimpleRateLimiter("alpaca", calls_per_minute=5)
+        self.rate_limiter = SimpleRateLimiter(calls=5, per_seconds=60)
 
     async def fetch_history(self, symbols: List[str], period: str = "90d", interval: str = "1d") -> Optional[pd.DataFrame]:
         """Fetch historical close prices for `symbols` using Alpaca Market Data API.
@@ -26,14 +26,44 @@ class AlpacaAdapter:
         if aiohttp is None:
             return None
 
+        timeframe_map = {
+            "1m": "1Min",
+            "5m": "5Min",
+            "15m": "15Min",
+            "1h": "1Hour",
+            "1d": "1Day",
+        }
+        timeframe = timeframe_map.get(interval, "1Day")
         headers = {"APCA-API-KEY-ID": self.api_key, "APCA-API-SECRET-KEY": self.secret}
         results = {}
         base = "https://data.alpaca.markets/v2/stocks"
         async with aiohttp.ClientSession(headers=headers) as session:
+            # try batch bars endpoint
+            try:
+                await self.rate_limiter.acquire('alpaca')
+                symbols_param = ",".join(symbols)
+                url = f"{base}/bars"
+                params = {"symbols": symbols_param, "timeframe": timeframe, "limit": 500}
+                async with session.get(url, params=params, timeout=30) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        bars_root = data.get("bars") or data
+                        if isinstance(bars_root, dict):
+                            for sym, arr in bars_root.items():
+                                items = arr if isinstance(arr, list) else arr.get("bars", [])
+                                results[sym] = [b.get("c") for b in items]
+                        else:
+                            pass
+            except Exception:
+                pass
+
+            # fallback per-symbol (if batch failed or partial)
             for sym in symbols:
-                await self.rate_limiter.wait_for_slot()
-                url = f"{base}/{sym}/bars?timeframe=1Day&limit=500"
+                if sym in results:
+                    continue
                 try:
+                    await self.rate_limiter.acquire('alpaca')
+                    url = f"{base}/{sym}/bars?timeframe={timeframe}&limit=500"
                     async with session.get(url, timeout=15) as resp:
                         if resp.status != 200:
                             continue

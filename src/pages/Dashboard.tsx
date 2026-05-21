@@ -25,6 +25,7 @@ export default function Dashboard() {
     breadthHistory,
     summary,
     qqqHealth,
+    qqqScore,
     fragilityMeter,
     leadLag,
     aiConcentration,
@@ -68,7 +69,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-3">
+      <div className="grid gap-6 xl:grid-cols-4">
         <div className="rounded-3xl border border-slate-800 bg-slate-900/90 p-6 shadow-glow">
           <p className="text-sm uppercase tracking-[0.3em] text-cyan-300/80">Live sector dashboard</p>
           <h2 className="mt-3 text-2xl font-semibold text-white">% change, RS, spread divergence</h2>
@@ -113,6 +114,24 @@ export default function Dashboard() {
                 <p>{warning}</p>
               </div>
             ))}
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-800 bg-slate-900/90 p-6 shadow-glow">
+          <p className="text-sm uppercase tracking-[0.3em] text-cyan-300/80">QQQ lead-lag score</p>
+          <div className="mt-4 flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-4xl font-semibold text-white">{qqqScore.direction}</h2>
+              <p className="mt-2 text-sm text-slate-400">Score: {qqqScore.raw_score.toFixed(2)}</p>
+            </div>
+            <div className="h-3 flex-1 overflow-hidden rounded-full bg-slate-950/80">
+              <div className="h-full rounded-full bg-cyan-400" style={{ width: `${Math.round((qqqScore.probability + 1) * 50)}%` }} />
+            </div>
+          </div>
+          <div className="mt-4 text-sm text-slate-300">
+            <p>Probability: {(qqqScore.probability * 100).toFixed(0)}%</p>
+            <p className="mt-2">Fragility: {(qqqScore.fragility * 100).toFixed(0)}%</p>
+            <p className="mt-2">Provider: {qqqScore.provider}</p>
           </div>
         </div>
       </div>
