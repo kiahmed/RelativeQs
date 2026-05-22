@@ -2,6 +2,9 @@ import os
 from typing import Optional
 import json
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 try:
     import redis.asyncio as redis
 except Exception:
@@ -51,5 +54,10 @@ class RedisCache:
         c = await self.client()
         if c is None:
             return
-        val = json.dumps(value, default=_json_encoder)
-        await c.set(key, val, ex=expire)
+        # the cache is best-effort: a serialization or Redis error must never
+        # bubble up and turn a working request into a 500.
+        try:
+            val = json.dumps(value, default=_json_encoder)
+            await c.set(key, val, ex=expire)
+        except Exception as exc:
+            logger.warning("[CACHE] set failed for key %s: %s", key, exc)

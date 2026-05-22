@@ -16,7 +16,7 @@ from app.config import settings
 class FinnhubAdapter:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.FINNHUB_KEY
-        self.rate_limiter = SimpleRateLimiter(calls=30, per_seconds=60)
+        self.rate_limiter = SimpleRateLimiter(calls=settings.FINNHUB_RATE_LIMIT, per_seconds=60)
 
     async def fetch_history(self, symbols: List[str], period: str = "90d", interval: str = "1d") -> Optional[pd.DataFrame]:
         if not self.api_key or aiohttp is None:

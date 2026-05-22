@@ -15,7 +15,7 @@ class AlpacaAdapter:
     def __init__(self, api_key: Optional[str] = None, secret: Optional[str] = None):
         self.api_key = api_key or settings.ALPACA_KEY
         self.secret = secret or settings.ALPACA_SECRET
-        self.rate_limiter = SimpleRateLimiter(calls=5, per_seconds=60)
+        self.rate_limiter = SimpleRateLimiter(calls=settings.ALPACA_RATE_LIMIT, per_seconds=60)
 
     async def fetch_history(self, symbols: List[str], period: str = "90d", interval: str = "1d") -> Optional[pd.DataFrame]:
         """Fetch historical close prices for `symbols` using Alpaca Market Data API.

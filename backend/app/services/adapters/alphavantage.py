@@ -9,8 +9,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# AlphaVantage free tier is very limited; default to 5 calls per minute
-_rate_limiter = SimpleRateLimiter(calls=5, per_seconds=60)
+# AlphaVantage free tier is very limited; default to 5 calls per minute.
+# Configurable via ALPHAVANTAGE_RATE_LIMIT in .env.
+_rate_limiter = SimpleRateLimiter(calls=settings.ALPHAVANTAGE_RATE_LIMIT, per_seconds=60)
 
 API_URL = "https://www.alphavantage.co/query"
 

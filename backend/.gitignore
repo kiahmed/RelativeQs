@@ -1,0 +1,10 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets — never commit
+.env
+
+# Research artifacts
+backtest_results.csv

@@ -6,8 +6,9 @@ import aiohttp
 from app.services.rate_limiter import SimpleRateLimiter
 from app.config import settings
 
-# TwelveData free tier: be conservative, e.g. 8 calls per minute
-_rate_limiter = SimpleRateLimiter(calls=8, per_seconds=60)
+# TwelveData free tier: be conservative, e.g. 8 calls per minute.
+# Configurable via TWELVEDATA_RATE_LIMIT in .env.
+_rate_limiter = SimpleRateLimiter(calls=settings.TWELVEDATA_RATE_LIMIT, per_seconds=60)
 
 API_URL = "https://api.twelvedata.com/time_series"
 

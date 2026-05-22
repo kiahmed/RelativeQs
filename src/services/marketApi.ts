@@ -11,8 +11,7 @@ import {
   type ChartPoint,
   type QQQScore,
 } from '../data/marketSignals'
-
-const BACKEND_URL = 'http://localhost:8000'
+import { BACKEND_URL } from '../config'
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 

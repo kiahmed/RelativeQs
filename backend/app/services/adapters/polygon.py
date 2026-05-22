@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class PolygonAdapter:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.POLYGON_KEY
-        self.rate_limiter = SimpleRateLimiter(calls=5, per_seconds=60)
+        self.rate_limiter = SimpleRateLimiter(calls=settings.POLYGON_RATE_LIMIT, per_seconds=60)
 
     async def _fetch_snapshot_batch(self, session, batch: List[str]) -> dict:
         """Call Polygon snapshot multi-ticker endpoint for a batch of tickers.

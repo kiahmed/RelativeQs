@@ -18,13 +18,22 @@ print(f"DATA_PROVIDER environment value: {os.getenv('DATA_PROVIDER')}")
 print(f"ALPHAVANTAGE_KEY present: {'ALPHAVANTAGE_KEY' in os.environ and bool(os.environ.get('ALPHAVANTAGE_KEY'))}")
 
 from app.api import router
+from app.billing import router as billing_router
 from app.ws_manager import WSManager
 from app.services.market_data import MarketDataService
+from app.config import settings
+from app import alerts
 
 app = FastAPI(title="Price Flow Tracker - Backend")
 
-# Allow local frontend origin; adjust for production
-origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+# Allow local frontend origins; adjust for production.
+# 5173 = `npm run dev` (Vite dev server), 4173 = `npm run preview` (built app).
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -34,6 +43,7 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api")
+app.include_router(billing_router, prefix="/api")
 
 provider_mode = os.getenv("DATA_PROVIDER", "mock")
 print(f"Using data provider mode: {provider_mode}")
@@ -61,7 +71,13 @@ async def _poll_and_broadcast():
             # broadcast to websocket clients
             await ws_manager.broadcast({"type": "snapshot", "payload": snapshot})
             await ws_manager.broadcast({"type": "qqq_score", "payload": qqq_score})
-            await asyncio.sleep(1.0)  # polling interval (tunable)
+            # email Pro subscribers if the QQQ trend regime just flipped
+            try:
+                await alerts.check_regime_and_alert(qqq_score)
+            except Exception as exc:
+                print(f"[ALERTS] regime check failed: {exc}")
+            # polling interval — configurable via POLL_INTERVAL_SECONDS in .env
+            await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)
     except asyncio.CancelledError:
         return
 

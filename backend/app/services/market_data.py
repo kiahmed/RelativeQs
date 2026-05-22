@@ -159,6 +159,9 @@ class MarketDataService:
             if cached:
                 logger.info("[CACHE] Cache hit for key: %s", cache_key)
                 df = pd.DataFrame(cached)
+                # the index was stringified before caching; restore the datetime index
+                df.index = pd.to_datetime(df.index, errors="coerce")
+                df = df[df.index.notna()].sort_index()
         if df is None:
             logger.info("[PROVIDER] Fetching history from provider: %s", provider)
             # provider-specific adapters
@@ -188,8 +191,11 @@ class MarketDataService:
 
             if df is not None and cache is not None:
                 logger.info("[CACHE] Storing result in cache with key: %s", cache_key)
-                # store as dict for simple JSON serialization
-                await cache.set(cache_key, df.to_dict(), expire=300)
+                # store as dict for simple JSON serialization;
+                # stringify the datetime index so the dict keys are valid JSON keys
+                payload = df.copy()
+                payload.index = payload.index.map(str)
+                await cache.set(cache_key, payload.to_dict(), expire=settings.CACHE_TTL_SECONDS)
             elif df is None:
                 logger.warning("[PROVIDER] No data returned from adapter, falling back to mock")
         data = df
@@ -253,37 +259,47 @@ class MarketDataService:
         }
         logger.info("[SIGNALS] Computed signals: %s", signals)
 
-        timestamps = [d.strftime("%Y-%m-%d") for d in qqq.index[-30:]]
-        flow_series = [{"t": ts, "QQQ": float(qqq.iloc[idx])} for idx, ts in enumerate(timestamps)]
+        # Align every series onto a shared date index before slicing, otherwise
+        # the per-symbol series can differ in length and idx-based access both
+        # misaligns dates/values and raises IndexError on the shorter series.
+        aligned = pd.DataFrame(
+            {"qqq": qqq, "xlk": xlk, "smh": smh, "xly": xly, "xlp": xlp}
+        ).dropna().tail(30)
+
+        timestamps = [d.strftime("%Y-%m-%d") for d in aligned.index]
+        flow_series = [
+            {"t": ts, "QQQ": float(aligned["qqq"].iloc[idx])}
+            for idx, ts in enumerate(timestamps)
+        ]
 
         qqq_comparison = [
             {
                 "name": ts,
-                "qqq": float(qqq.iloc[idx]),
-                "xlk": float(xlk.iloc[idx]),
-                "smh": float(smh.iloc[idx]),
+                "qqq": float(aligned["qqq"].iloc[idx]),
+                "xlk": float(aligned["xlk"].iloc[idx]),
+                "smh": float(aligned["smh"].iloc[idx]),
             }
             for idx, ts in enumerate(timestamps)
         ]
 
         xly_xlp_ratio = [
-            {"name": ts, "value": float(xly.iloc[idx] / xlp.iloc[idx])}
+            {"name": ts, "value": float(aligned["xly"].iloc[idx] / aligned["xlp"].iloc[idx])}
             for idx, ts in enumerate(timestamps)
-            if xlp.iloc[idx] != 0
+            if aligned["xlp"].iloc[idx] != 0
         ]
 
-        def rolling_corr(series_a, series_b, window=10):
+        def rolling_corr(series_a, series_b, window=10, key="qqqXlk"):
             aligned = pd.DataFrame({"a": series_a, "b": series_b}).dropna()
             if len(aligned) < window:
                 return []
             corr = aligned["a"].pct_change().rolling(window).corr(aligned["b"].pct_change()).dropna()
             return [
-                {"name": idx.strftime("%Y-%m-%d"), "qqqXlk": float(corr.iloc[i])}
+                {"name": idx.strftime("%Y-%m-%d"), key: float(corr.iloc[i])}
                 for i, idx in enumerate(corr.index)
             ]
 
-        qqq_xlk_corr = rolling_corr(qqq, xlk)
-        qqq_smh_corr = rolling_corr(qqq, smh)
+        qqq_xlk_corr = rolling_corr(qqq, xlk, key="qqqXlk")
+        qqq_smh_corr = rolling_corr(qqq, smh, key="qqqSmh")
         rolling_correlation = []
         for i in range(min(len(qqq_xlk_corr), len(qqq_smh_corr))):
             rolling_correlation.append(
@@ -384,7 +400,7 @@ class MarketDataService:
             return df.sort_index()
         return None
 
-    async def fetch_qqq_score(self, period: str = "7d", interval: str = "1m") -> Dict[str, Any]:
+    async def fetch_qqq_score(self, period: str = "2y", interval: str = "1d") -> Dict[str, Any]:
         logger.info("[MARKET] Computing QQQ score for interval=%s, period=%s", interval, period)
         symbols = ["XLK", "SMH", "QQQ", "XLY", "XLF", "XLI", "IWM", "XLE"]
         data = await self.fetch_intraday_history(symbols, period=period, interval=interval)

@@ -1,5 +1,6 @@
-from typing import Dict, Any, List
+from typing import Dict, Any
 import logging
+
 import numpy as np
 import pandas as pd
 
@@ -7,14 +8,32 @@ logger = logging.getLogger(__name__)
 
 
 class QQQScoreEngine:
-    """Prototype QQQ direction scoring using leader, broadening, and confirmation signals."""
+    """QQQ trend-regime engine.
+
+    The score is driven by QQQ's position relative to its long-term
+    (200-day) moving average. Backtests showed this trend filter held a
+    comparable Sharpe to buy-and-hold with a materially shallower drawdown,
+    whereas the previous short-momentum score had no measurable edge.
+
+    The sector-momentum figures below are kept for display only — they do
+    NOT drive the score.
+    """
 
     LEADER_TICKERS = ["XLK", "SMH"]
     BROADENERS = ["XLY", "XLF"]
     CONFIRMERS = ["XLI", "IWM", "XLE"]
     TARGET = "QQQ"
 
-    def _momentum(self, series: pd.Series, periods: int = 5) -> float:
+    TREND_WINDOW = 200      # trading days for the trend moving average
+    MOMENTUM_WINDOW = 20    # trading days for informational momentum
+
+    # ------------------------------------------------------------------ #
+    # helpers                                                             #
+    # ------------------------------------------------------------------ #
+    def _momentum(self, series, periods: int = MOMENTUM_WINDOW) -> float:
+        """Simple point-to-point return over `periods` bars. Display only."""
+        if series is None:
+            return 0.0
         values = series.dropna()
         if len(values) <= periods:
             return 0.0
@@ -23,117 +42,104 @@ class QQQScoreEngine:
         except Exception:
             return 0.0
 
-    def _lagged_correlation(self, returns: pd.DataFrame, symbol: str, max_lag: int = 5) -> Dict[str, float]:
-        if symbol not in returns.columns or self.TARGET not in returns.columns:
-            return {"symbol": symbol, "bestLag": 0, "corr": 0.0, "lead": False}
-
-        target = returns[self.TARGET]
-        best_corr = 0.0
-        best_lag = 0
-        for lag in range(-max_lag, max_lag + 1):
-            shifted = returns[symbol].shift(-lag)
-            corr = float(shifted.corr(target) or 0.0)
-            if abs(corr) > abs(best_corr):
-                best_corr = corr
-                best_lag = lag
-
+    def _neutral(self, reason: str) -> Dict[str, Any]:
+        """A fully-populated, neutral result used when data is insufficient."""
+        logger.warning("[QQQScoreEngine] %s", reason)
         return {
-            "symbol": symbol,
-            "bestLag": int(best_lag),
-            "corr": float(best_corr),
-            "lead": best_lag > 0,
+            "direction": "neutral",
+            "regime": "unknown",
+            "raw_score": 0.0,
+            "probability": 0.0,
+            "fragility": 0.0,
+            "above_trend": False,
+            "trend_gap": 0.0,
+            "sma": 0.0,
+            "price": 0.0,
+            "trend_window": 0,
+            "leader_momentum": {t: 0.0 for t in self.LEADER_TICKERS},
+            "mags_momentum": 0.0,
+            "broadening_momentum": {t: 0.0 for t in self.BROADENERS},
+            "broadening_avg": 0.0,
+            "confirmation_momentum": {t: 0.0 for t in self.CONFIRMERS},
+            "confirmation_avg": 0.0,
+            "lead_lag": [],
+            "lead_signal": 0.0,
+            "recent_qqq": [],
+            "note": reason,
         }
 
+    # ------------------------------------------------------------------ #
+    # main                                                                #
+    # ------------------------------------------------------------------ #
     def compute(self, data: pd.DataFrame) -> Dict[str, Any]:
-        if data is None or data.empty:
-            logger.warning("[QQQScoreEngine] Empty data provided")
-            return {"error": "no intraday data available"}
+        if data is None or getattr(data, "empty", True):
+            return self._neutral("no price data available")
 
-        data = data.sort_index()
-        close = data
-        result: Dict[str, Any] = {}
+        close = data.sort_index()
+        qqq = close.get(self.TARGET)
+        if qqq is None:
+            return self._neutral("QQQ column missing from price data")
+        qqq = qqq.dropna()
+        if len(qqq) < 20:
+            return self._neutral("insufficient QQQ history for a trend read")
 
-        leader_signal = []
-        leader_mom = {}
-        for symbol in self.LEADER_TICKERS:
-            series = close.get(symbol)
-            if series is None:
-                leader_mom[symbol] = 0.0
-            else:
-                leader_mom[symbol] = self._momentum(series, periods=5)
-            leader_signal.append(leader_mom[symbol])
+        # --- trend regime: QQQ vs its long-term moving average ----------
+        window = min(self.TREND_WINDOW, len(qqq) - 1)
+        sma_series = qqq.rolling(window).mean()
+        price = float(qqq.iloc[-1])
+        sma = float(sma_series.iloc[-1])
+        # fractional gap: how far price sits above (+) or below (-) trend
+        trend_gap = (price / sma - 1.0) if sma else 0.0
 
-        mags_mom = float(np.mean(leader_signal)) if leader_signal else 0.0
-        broadening_mom = []
-        broadening = {}
-        for symbol in self.BROADENERS:
-            series = close.get(symbol)
-            if series is None:
-                broadening[symbol] = 0.0
-            else:
-                broadening[symbol] = self._momentum(series, periods=5)
-            broadening_mom.append(broadening[symbol])
+        above_trend = trend_gap > 0
+        direction = "bullish" if above_trend else "bearish"
+        regime = "risk-on" if above_trend else "risk-off"
 
-        confirmation_mom = []
-        confirmation = {}
-        for symbol in self.CONFIRMERS:
-            series = close.get(symbol)
-            if series is None:
-                confirmation[symbol] = 0.0
-            else:
-                confirmation[symbol] = self._momentum(series, periods=5)
-            confirmation_mom.append(confirmation[symbol])
+        raw_score = float(trend_gap)
+        # probability stays in (-1, 1) so the frontend gauge maps cleanly
+        probability = float(np.tanh(trend_gap * 10.0))
+        # fragility rises the further price sits BELOW its trend line
+        fragility = float(np.clip(-trend_gap * 5.0, 0.0, 1.0))
 
-        leader_avg = float(np.mean(leader_signal)) if leader_signal else 0.0
-        broadening_avg = float(np.mean(broadening_mom)) if broadening_mom else 0.0
-        confirmation_avg = float(np.mean(confirmation_mom)) if confirmation_mom else 0.0
+        # --- informational sector momentum (display only) --------------
+        leader_mom = {t: self._momentum(close.get(t)) for t in self.LEADER_TICKERS}
+        broadening = {t: self._momentum(close.get(t)) for t in self.BROADENERS}
+        confirmation = {t: self._momentum(close.get(t)) for t in self.CONFIRMERS}
+        mags_mom = float(np.mean(list(leader_mom.values()))) if leader_mom else 0.0
+        broadening_avg = float(np.mean(list(broadening.values()))) if broadening else 0.0
+        confirmation_avg = float(np.mean(list(confirmation.values()))) if confirmation else 0.0
 
-        returns = close.pct_change().dropna()
-        lead_lag = [self._lagged_correlation(returns, symbol) for symbol in self.LEADER_TICKERS]
-        lead_corr_values = [item["corr"] if item["lead"] else 0.0 for item in lead_lag]
-        lead_signal = float(np.mean(lead_corr_values)) if lead_corr_values else 0.0
-
-        raw_score = (
-            0.45 * leader_avg
-            + 0.20 * broadening_avg
-            + 0.20 * confirmation_avg
-            + 0.15 * lead_signal
-        )
-        probability = float(np.tanh(raw_score * 2.0))
-        fragility = float(np.clip(-confirmation_avg * 0.7 + max(0.0, -broadening_avg) * 0.3, 0.0, 1.0))
-        direction = "bullish" if raw_score >= 0 else "bearish"
-
-        qqq_series = close.get(self.TARGET)
         recent = []
-        if qqq_series is not None:
-            last_points = qqq_series.dropna().iloc[-30:]
-            recent = [
-                {"t": idx.strftime("%Y-%m-%d %H:%M"), "QQQ": float(value)}
-                for idx, value in last_points.items()
-            ]
+        for idx, val in qqq.iloc[-30:].items():
+            try:
+                label = idx.strftime("%Y-%m-%d")
+            except AttributeError:
+                label = str(idx)
+            recent.append({"t": label, "QQQ": float(val)})
 
-        result.update(
-            {
-                "direction": direction,
-                "raw_score": raw_score,
-                "probability": probability,
-                "fragility": fragility,
-                "leader_momentum": leader_mom,
-                "mags_momentum": mags_mom,
-                "broadening_momentum": broadening,
-                "broadening_avg": broadening_avg,
-                "confirmation_momentum": confirmation,
-                "confirmation_avg": confirmation_avg,
-                "lead_lag": lead_lag,
-                "lead_signal": lead_signal,
-                "recent_qqq": recent,
-            }
-        )
-
+        result = {
+            "direction": direction,
+            "regime": regime,
+            "raw_score": raw_score,
+            "probability": probability,
+            "fragility": fragility,
+            "above_trend": bool(above_trend),
+            "trend_gap": raw_score,
+            "sma": sma,
+            "price": price,
+            "trend_window": int(window),
+            "leader_momentum": leader_mom,
+            "mags_momentum": mags_mom,
+            "broadening_momentum": broadening,
+            "broadening_avg": broadening_avg,
+            "confirmation_momentum": confirmation,
+            "confirmation_avg": confirmation_avg,
+            "lead_lag": [],
+            "lead_signal": 0.0,
+            "recent_qqq": recent,
+        }
         logger.info(
-            "[QQQScoreEngine] Computed score raw=%.4f probability=%.4f direction=%s",
-            raw_score,
-            probability,
-            direction,
+            "[QQQScoreEngine] regime=%s trend_gap=%.4f fragility=%.3f window=%d",
+            regime, raw_score, fragility, window,
         )
         return result

@@ -43,6 +43,14 @@ export type QQQScore = {
   lead_lag: { symbol: string; bestLag: number; corr: number; lead: boolean }[]
   lead_signal: number
   recent_qqq: { t: string; QQQ: number }[]
+  // trend-regime fields (200-day SMA engine) — optional for backward compatibility
+  regime?: string
+  above_trend?: boolean
+  trend_gap?: number
+  sma?: number
+  price?: number
+  trend_window?: number
+  note?: string
 }
 
 export type LeadLagSignal = {

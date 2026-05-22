@@ -24,6 +24,7 @@ import {
 } from '../data/marketSignals'
 import { fetchLiveMarketSnapshot, fetchLiveQQQScore, MarketSnapshot } from '../services/marketApi'
 import { createBackendClient } from '../services/backendClient'
+import { WS_URL } from '../config'
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
@@ -186,7 +187,7 @@ export const useMarketStore = create<MarketState>((set) => {
     },
     loading: false,
     wsConnected: false,
-    startRealtime: (wsUrl = 'ws://localhost:8000/ws/market') => {
+    startRealtime: (wsUrl = WS_URL) => {
       // lazy-create client on first call
       const anyGlobal = (window as any)
       if (!anyGlobal.__pf_ws_client) {
