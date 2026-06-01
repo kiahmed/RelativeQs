@@ -12,6 +12,11 @@ except Exception:
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 
+# Keys the background poll loop writes the freshest payloads to and that the
+# API reads back, so requests are served from Redis without refetching.
+SNAPSHOT_KEY = "snapshot:latest"
+QQQ_SCORE_KEY = "qqq_score:latest"
+
 
 def _json_encoder(obj):
     try:

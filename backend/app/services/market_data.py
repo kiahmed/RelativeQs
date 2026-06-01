@@ -58,9 +58,9 @@ class MarketDataService:
         logger.info("[MARKET] resolved provider: %s", provider)
         return provider
 
-    async def fetch_snapshot(self) -> Dict[str, Any]:
+    async def fetch_snapshot(self, use_cache: bool = True) -> Dict[str, Any]:
         if self.mode != "mock":
-            return await self._yahoo_snapshot()
+            return await self._yahoo_snapshot(use_cache=use_cache)
         return await self._mock_snapshot()
 
     async def _mock_snapshot(self) -> Dict[str, Any]:
@@ -97,107 +97,53 @@ class MarketDataService:
             "flow_series": flow_series,
         }
 
-    async def _yahoo_snapshot(self) -> Dict[str, Any]:
-        logger.info("[YAHOO] Fetching snapshot from provider: %s", self.mode)
+    async def _yahoo_snapshot(self, use_cache: bool = True) -> Dict[str, Any]:
+        logger.info("[YAHOO] Fetching intraday snapshot from provider: %s", self.mode)
         if yf is None:
             return await self._mock_snapshot()
 
         symbols = ["XLK", "SMH", "QQQ", "XLY", "XLF", "XLI", "IWM", "XLE", "XLP", "TLT"]
+        provider = self._resolve_provider()
 
-        provider = (settings.DATA_PROVIDER or os.getenv("DATA_PROVIDER", "yahoo")).lower()
-        # allow automatic provider selection: pick a best available provider that supports batch fetching
-        if provider in ("auto", "best"):
-            candidates = [
-                ("twelvedata", getattr(settings, "TWELVEDATA_KEY", None)),
-                ("alpaca", getattr(settings, "ALPACA_KEY", None)),
-                ("polygon", getattr(settings, "POLYGON_KEY", None)),
-                ("yahoo", None),
-                ("finnhub", getattr(settings, "FINNHUB_KEY", None)),
-                ("alphavantage", getattr(settings, "ALPHAVANTAGE_KEY", None)),
-            ]
-            chosen = None
-            for name, key in candidates:
-                if name == "yahoo":
-                    # yahoo via yfinance available if library present
-                    if yf is not None:
-                        chosen = "yahoo"
-                        break
-                    continue
-                if key:
-                    chosen = name
-                    break
-            if chosen:
-                provider = chosen
-            else:
-                provider = "yahoo"
-        df = None
+        # Intraday bars so the momentum / breadth signals actually move during
+        # the trading session, instead of being pinned to a static daily close.
+        period, interval = "5d", "1m"
 
-        # lazy import adapters to avoid hard dependency
-        from app.services.adapters import AlphaVantageAdapter, TwelveDataAdapter, FinnhubAdapter
-        try:
-            from app.services.adapters.polygon import PolygonAdapter
-        except Exception:
-            PolygonAdapter = None
-        try:
-            from app.services.adapters.alpaca import AlpacaAdapter
-        except Exception:
-            AlpacaAdapter = None
-
-        cache = None
         try:
             from app.services.cache import RedisCache
             cache = RedisCache()
         except Exception:
             cache = None
-        print("---------------------------")
-        cache_key = f"history:{provider}:{','.join(symbols)}"
-        print(f"Cache key: {cache_key}")
-        if cache is not None:
-            print(f"Cache: {cache}")
+
+        cache_key = f"history:{provider}:{interval}:{','.join(symbols)}"
+        df = None
+        # The background poll loop fetches fresh every cycle (use_cache=False);
+        # the read-through cache only shields rare on-demand API fallbacks so a
+        # burst of direct requests can't hammer the provider.
+        if use_cache and cache is not None:
             cached = await cache.get(cache_key)
-            print(f"cached: {cached}")
             if cached:
-                logger.info("[CACHE] Cache hit for key: %s", cache_key)
+                logger.info("[CACHE] Snapshot history hit for key: %s", cache_key)
                 df = pd.DataFrame(cached)
                 # the index was stringified before caching; restore the datetime index
                 df.index = pd.to_datetime(df.index, errors="coerce")
                 df = df[df.index.notna()].sort_index()
-        if df is None:
-            logger.info("[PROVIDER] Fetching history from provider: %s", provider)
-            # provider-specific adapters
-            if provider == 'alphavantage':
-                logger.debug("[ALPHAVANTAGE] Calling adapter for symbols: %s", symbols)
-                adapter = AlphaVantageAdapter()
-                df = await adapter.fetch_history(symbols)
-            elif provider == 'twelvedata':
-                logger.debug("[TWELVEDATA] Calling adapter for symbols: %s", symbols)
-                adapter = TwelveDataAdapter()
-                df = await adapter.fetch_history(symbols)
-            elif provider == 'polygon' and PolygonAdapter is not None:
-                logger.debug("[POLYGON] Calling adapter for symbols: %s", symbols)
-                adapter = PolygonAdapter()
-                df = await adapter.fetch_history(symbols)
-            elif provider == 'alpaca' and AlpacaAdapter is not None:
-                logger.debug("[ALPACA] Calling adapter for symbols: %s", symbols)
-                adapter = AlpacaAdapter()
-                df = await adapter.fetch_history(symbols)
-            elif provider == 'finnhub' and FinnhubAdapter is not None:
-                logger.debug("[FINNHUB] Calling adapter for symbols: %s", symbols)
-                adapter = FinnhubAdapter()
-                df = await adapter.fetch_history(symbols)
-            else:
-                logger.debug("[YFINANCE] Calling fallback yfinance for symbols: %s", symbols)
-                df = await asyncio.to_thread(self._download_history, symbols)
 
-            if df is not None and cache is not None:
-                logger.info("[CACHE] Storing result in cache with key: %s", cache_key)
-                # store as dict for simple JSON serialization;
-                # stringify the datetime index so the dict keys are valid JSON keys
-                payload = df.copy()
-                payload.index = payload.index.map(str)
-                await cache.set(cache_key, payload.to_dict(), expire=settings.CACHE_TTL_SECONDS)
-            elif df is None:
-                logger.warning("[PROVIDER] No data returned from adapter, falling back to mock")
+        if df is None:
+            logger.info("[PROVIDER] Fetching intraday history (%s/%s) from: %s", period, interval, provider)
+            df = await self._fetch_history_from_provider(symbols, period=period, interval=interval)
+            if df is not None:
+                df = df.sort_index()
+                if cache is not None:
+                    logger.info("[CACHE] Storing snapshot history with key: %s", cache_key)
+                    # store as dict for simple JSON serialization;
+                    # stringify the datetime index so the dict keys are valid JSON keys
+                    payload = df.copy()
+                    payload.index = payload.index.map(str)
+                    await cache.set(cache_key, payload.to_dict(), expire=settings.CACHE_TTL_SECONDS)
+            else:
+                logger.warning("[PROVIDER] No intraday data returned, falling back to mock")
+
         data = df
         if data is None or data.empty:
             return await self._mock_snapshot()
@@ -266,7 +212,8 @@ class MarketDataService:
             {"qqq": qqq, "xlk": xlk, "smh": smh, "xly": xly, "xlp": xlp}
         ).dropna().tail(30)
 
-        timestamps = [d.strftime("%Y-%m-%d") for d in aligned.index]
+        # intraday bars share a calendar date, so label points with the time too
+        timestamps = [d.strftime("%m-%d %H:%M") for d in aligned.index]
         flow_series = [
             {"t": ts, "QQQ": float(aligned["qqq"].iloc[idx])}
             for idx, ts in enumerate(timestamps)
@@ -294,7 +241,7 @@ class MarketDataService:
                 return []
             corr = aligned["a"].pct_change().rolling(window).corr(aligned["b"].pct_change()).dropna()
             return [
-                {"name": idx.strftime("%Y-%m-%d"), key: float(corr.iloc[i])}
+                {"name": idx.strftime("%m-%d %H:%M"), key: float(corr.iloc[i])}
                 for i, idx in enumerate(corr.index)
             ]
 
@@ -327,22 +274,8 @@ class MarketDataService:
         }
         logger.info("[SNAPSHOT] Generated snapshot with %d signals, timestamp=%d", len(signals), snapshot["timestamp"])
 
-        # publish/persist snapshot if Redis configured
-        try:
-            if settings.REDIS_URL:
-                logger.debug("[REDIS] Publishing snapshot to Redis channel market:snapshots")
-                from app.services.cache import RedisCache
-                rc = RedisCache()
-                client = await rc.client()
-                if client is not None:
-                    payload = json.dumps(snapshot, default=str)
-                    await client.publish("market:snapshots", payload)
-                    await client.lpush("market:snapshots:list", payload)
-                    await client.ltrim("market:snapshots:list", 0, 99)
-                    logger.debug("[REDIS] Snapshot published successfully")
-        except Exception as e:
-            logger.warning("[REDIS] Failed to publish snapshot: %s", str(e))
-
+        # Persisting the snapshot to Redis is owned by the background poll loop
+        # (it writes SNAPSHOT_KEY each cycle), so the computation stays pure here.
         return snapshot
 
     async def _fetch_history_from_provider(self, symbols: List[str], period: str = "7d", interval: str = "1m") -> Optional[pd.DataFrame]:

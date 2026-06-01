@@ -3,6 +3,7 @@ import os
 import logging
 from typing import Optional
 from app.services.market_data import MarketDataService
+from app.services.cache import RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY
 from app.core.score_engine import ScoreEngine
 from app.config import settings
 from app import auth, supabase_admin, alerts
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 provider_mode = settings.DATA_PROVIDER or os.getenv("DATA_PROVIDER", "mock")
 market = MarketDataService(mode=provider_mode)
 engine = ScoreEngine()
+cache = RedisCache()
 
 @router.get("/health")
 async def health():
@@ -24,15 +26,28 @@ async def health():
 @router.get("/snapshot")
 async def snapshot():
     logger.info("[API] GET /snapshot")
+    # Served from the Redis cache the background poll loop keeps fresh; only
+    # compute on demand if the cache is empty (Redis down, or loop not started).
+    snap = await cache.get(SNAPSHOT_KEY)
+    if snap:
+        logger.info("[API] Snapshot served from Redis (timestamp=%s)", snap.get("timestamp"))
+        return snap
+    logger.info("[API] Snapshot cache miss — computing on demand")
     snap = await market.fetch_snapshot()
     logger.info("[API] Snapshot retrieved with %d signals", len(snap.get("signals", {})))
-    logger.debug("[API] Snapshot data: timestamp=%s", snap.get("timestamp"))
     return snap
 
 @router.get("/qqq-score")
 async def qqq_score(interval: Optional[str] = "1d", period: Optional[str] = "2y"):
     # The trend-regime engine needs ~200 daily bars, so default to daily data.
     logger.info("[API] GET /qqq-score interval=%s period=%s", interval, period)
+    # The cached payload is computed with the defaults; for non-default params
+    # fall through to an on-demand compute.
+    if (interval or "1d") == "1d" and (period or "2y") == "2y":
+        cached = await cache.get(QQQ_SCORE_KEY)
+        if cached:
+            logger.info("[API] QQQ score served from Redis")
+            return cached
     score = await market.fetch_qqq_score(period=period or "2y", interval=interval or "1d")
     logger.debug("[API] QQQ score payload: %s", score)
     return score

@@ -64,10 +64,23 @@ async def shutdown_event():
 
 
 async def _poll_and_broadcast():
+    from app.services.cache import RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY
+
+    cache = RedisCache()
+    # Keep the cached payloads alive a few cycles longer than the poll interval
+    # so one slow/failed fetch doesn't leave the API serving an empty cache.
+    cache_ttl = max(int(settings.POLL_INTERVAL_SECONDS) * 3, 60)
+
     try:
         while True:
-            snapshot = await market.fetch_snapshot()
+            # use_cache=False: the poll interval is the throttle, so each cycle
+            # pulls genuinely fresh data and writes it to Redis for the API/UI.
+            snapshot = await market.fetch_snapshot(use_cache=False)
             qqq_score = await market.fetch_qqq_score()
+            # publish the freshest payloads to Redis — this is the process that
+            # keeps the cache the frontend reads continuously up to date.
+            await cache.set(SNAPSHOT_KEY, snapshot, expire=cache_ttl)
+            await cache.set(QQQ_SCORE_KEY, qqq_score, expire=cache_ttl)
             # broadcast to websocket clients
             await ws_manager.broadcast({"type": "snapshot", "payload": snapshot})
             await ws_manager.broadcast({"type": "qqq_score", "payload": qqq_score})
