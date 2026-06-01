@@ -45,7 +45,12 @@ class RedisCache:
         c = await self.client()
         if c is None:
             return None
-        v = await c.get(key)
+        # best-effort: a Redis outage must degrade to a cache miss, not a 500.
+        try:
+            v = await c.get(key)
+        except Exception as exc:
+            logger.warning("[CACHE] get failed for key %s: %s", key, exc)
+            return None
         if v is None:
             return None
         if isinstance(v, bytes):

@@ -1,7 +1,9 @@
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+import logging
 import os
+import time
 
 try:
     from dotenv import load_dotenv
@@ -13,6 +15,12 @@ except ModuleNotFoundError:
     print("python-dotenv not installed; .env will not be loaded")
 except Exception as e:
     print(f"Could not load .env file: {e}")
+
+# Configure logging before importing app modules so their import-time logs
+# (and every later [API]/[MARKET]/[CACHE] line) land in backend/logs/app.log.
+from app.logging_config import setup_logging
+setup_logging()
+logger = logging.getLogger(__name__)
 
 print(f"DATA_PROVIDER environment value: {os.getenv('DATA_PROVIDER')}")
 print(f"ALPHAVANTAGE_KEY present: {'ALPHAVANTAGE_KEY' in os.environ and bool(os.environ.get('ALPHAVANTAGE_KEY'))}")
@@ -70,9 +78,14 @@ async def _poll_and_broadcast():
     # Keep the cached payloads alive a few cycles longer than the poll interval
     # so one slow/failed fetch doesn't leave the API serving an empty cache.
     cache_ttl = max(int(settings.POLL_INTERVAL_SECONDS) * 3, 60)
+    cycle = 0
 
-    try:
-        while True:
+    logger.info("[POLL] background loop started (interval=%ss)", settings.POLL_INTERVAL_SECONDS)
+    while True:
+        cycle += 1
+        started = time.monotonic()
+        # One failed cycle must not kill the loop — log it and try again next tick.
+        try:
             # use_cache=False: the poll interval is the throttle, so each cycle
             # pulls genuinely fresh data and writes it to Redis for the API/UI.
             snapshot = await market.fetch_snapshot(use_cache=False)
@@ -84,15 +97,31 @@ async def _poll_and_broadcast():
             # broadcast to websocket clients
             await ws_manager.broadcast({"type": "snapshot", "payload": snapshot})
             await ws_manager.broadcast({"type": "qqq_score", "payload": qqq_score})
+
+            elapsed = time.monotonic() - started
+            logger.info(
+                "[POLL] cycle %d OK in %.2fs | provider=%s signals=%d qqq_dir=%s prob=%.3f ws_clients=%d",
+                cycle, elapsed, qqq_score.get("provider", "?"),
+                len(snapshot.get("signals", {})),
+                qqq_score.get("direction", "?"),
+                float(qqq_score.get("probability", 0.0) or 0.0),
+                len(ws_manager.active),
+            )
+
             # email Pro subscribers if the QQQ trend regime just flipped
             try:
                 await alerts.check_regime_and_alert(qqq_score)
-            except Exception as exc:
-                print(f"[ALERTS] regime check failed: {exc}")
-            # polling interval — configurable via POLL_INTERVAL_SECONDS in .env
-            await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)
-    except asyncio.CancelledError:
-        return
+            except Exception:
+                logger.exception("[ALERTS] regime check failed")
+        except asyncio.CancelledError:
+            logger.info("[POLL] background loop cancelled — stopping")
+            raise
+        except Exception:
+            elapsed = time.monotonic() - started
+            logger.exception("[POLL] cycle %d FAILED after %.2fs", cycle, elapsed)
+
+        # polling interval — configurable via POLL_INTERVAL_SECONDS in .env
+        await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)
 
 
 @app.websocket("/ws/market")

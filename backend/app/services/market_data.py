@@ -297,32 +297,52 @@ class MarketDataService:
         except Exception:
             AlpacaAdapter = None
 
-        if provider == "alphavantage" and AlphaVantageAdapter is not None:
-            adapter = AlphaVantageAdapter()
-            df = await adapter.fetch_history(symbols, period=period, interval=interval)
-        elif provider == "twelvedata" and TwelveDataAdapter is not None:
-            adapter = TwelveDataAdapter()
-            df = await adapter.fetch_history(symbols, period=period, interval=interval)
-        elif provider == "polygon" and PolygonAdapter is not None:
-            adapter = PolygonAdapter()
-            df = await adapter.fetch_history(symbols, period=period, interval=interval)
-        elif provider == "alpaca" and AlpacaAdapter is not None:
-            adapter = AlpacaAdapter()
-            df = await adapter.fetch_history(symbols, period=period, interval=interval)
-        elif provider == "finnhub" and FinnhubAdapter is not None:
-            adapter = FinnhubAdapter()
-            df = await adapter.fetch_history(symbols, period=period, interval=interval)
-        elif provider == "yahoo" and yf is not None:
-            df = await asyncio.to_thread(self._download_intraday_history, symbols, period=period, interval=interval)
-        elif provider in ("auto", "best") and yf is not None:
-            logger.info("[MARKET] Auto provider failed or unavailable, falling back to Yahoo intraday for symbols: %s", symbols)
-            df = await asyncio.to_thread(self._download_intraday_history, symbols, period=period, interval=interval)
+        started = time.monotonic()
+        logger.info(
+            "[FETCH] pulling %d symbols | provider=%s period=%s interval=%s",
+            len(symbols), provider, period, interval,
+        )
+        try:
+            if provider == "alphavantage" and AlphaVantageAdapter is not None:
+                adapter = AlphaVantageAdapter()
+                df = await adapter.fetch_history(symbols, period=period, interval=interval)
+            elif provider == "twelvedata" and TwelveDataAdapter is not None:
+                adapter = TwelveDataAdapter()
+                df = await adapter.fetch_history(symbols, period=period, interval=interval)
+            elif provider == "polygon" and PolygonAdapter is not None:
+                adapter = PolygonAdapter()
+                df = await adapter.fetch_history(symbols, period=period, interval=interval)
+            elif provider == "alpaca" and AlpacaAdapter is not None:
+                adapter = AlpacaAdapter()
+                df = await adapter.fetch_history(symbols, period=period, interval=interval)
+            elif provider == "finnhub" and FinnhubAdapter is not None:
+                adapter = FinnhubAdapter()
+                df = await adapter.fetch_history(symbols, period=period, interval=interval)
+            elif provider == "yahoo" and yf is not None:
+                df = await asyncio.to_thread(self._download_intraday_history, symbols, period=period, interval=interval)
+            elif provider in ("auto", "best") and yf is not None:
+                logger.info("[MARKET] Auto provider failed or unavailable, falling back to Yahoo intraday for symbols: %s", symbols)
+                df = await asyncio.to_thread(self._download_intraday_history, symbols, period=period, interval=interval)
 
-        if df is None and provider == "yahoo" and yf is not None:
-            df = await asyncio.to_thread(self._download_intraday_history, symbols, period=period, interval=interval)
+            if df is None and provider == "yahoo" and yf is not None:
+                df = await asyncio.to_thread(self._download_intraday_history, symbols, period=period, interval=interval)
+        except Exception:
+            elapsed = time.monotonic() - started
+            logger.exception(
+                "[FETCH] ERROR provider=%s after %.2fs (symbols=%s)", provider, elapsed, symbols
+            )
+            return None
 
+        elapsed = time.monotonic() - started
         if df is not None and not df.empty:
+            logger.info(
+                "[FETCH] OK provider=%s in %.2fs | rows=%d cols=%d",
+                provider, elapsed, len(df), len(df.columns),
+            )
             return df
+        logger.warning(
+            "[FETCH] NO DATA provider=%s in %.2fs (symbols=%s)", provider, elapsed, symbols
+        )
         return None
 
     async def fetch_intraday_history(self, symbols: List[str], period: str = "7d", interval: str = "1m") -> Optional[pd.DataFrame]:
