@@ -1,13 +1,20 @@
-version: '3.8'
 services:
   web:
     build: .
+    container_name: relativeqs-backend
     ports:
-      - "8000:8000"
+      - "8001:8000"
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://postiz-redis:6379/1
     volumes:
       - ./:/app
-    depends_on: []
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    networks:
+      - default
+      - postiz
+
+networks:
+  postiz:
+    external: true
+    name: soljet-postiz_postiz-network
