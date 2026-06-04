@@ -90,6 +90,48 @@ function Card({ children, className = '' }: { children: ReactNode; className?: s
   )
 }
 
+/** small colour-key legend pinned to the bottom of a card */
+function CardLegend({ items, note }: { items: { label: string; cls: string }[]; note?: string }) {
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-800/80 pt-3 text-[0.7rem] text-slate-400">
+      {items.map((it) => (
+        <span key={it.label} className="inline-flex items-center gap-1.5">
+          <span className={`h-2 w-2 rounded-full ${it.cls}`} />
+          {it.label}
+        </span>
+      ))}
+      {note && <span className="ml-auto text-slate-500">{note}</span>}
+    </div>
+  )
+}
+
+const ROLE_LEGEND = [
+  { label: 'Leader', cls: 'bg-cyan-400' },
+  { label: 'Confirmer', cls: 'bg-emerald-400' },
+  { label: 'Diverging', cls: 'bg-rose-400' },
+  { label: 'Weak', cls: 'bg-slate-500' },
+]
+const VERDICT_LEGEND = [
+  { label: 'Continue', cls: 'bg-emerald-400' },
+  { label: 'Stall', cls: 'bg-amber-400' },
+  { label: 'Fragile', cls: 'bg-rose-400' },
+]
+const CONFIRM_LEGEND = [
+  { label: 'Confirmed', cls: 'bg-emerald-400' },
+  { label: 'Unconfirmed', cls: 'bg-amber-400' },
+  { label: 'Fragile', cls: 'bg-rose-400' },
+]
+const REGIME_LEGEND = [
+  { label: 'Coupled', cls: 'bg-emerald-400' },
+  { label: 'Transitional', cls: 'bg-amber-400' },
+  { label: 'Fragmented', cls: 'bg-rose-400' },
+]
+const BREADTH_LEGEND = [
+  { label: 'Broad', cls: 'bg-emerald-400' },
+  { label: 'Mixed', cls: 'bg-amber-400' },
+  { label: 'Narrow', cls: 'bg-rose-400' },
+]
+
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
     <p className="text-[0.7rem] font-semibold uppercase tracking-[0.25em] text-cyan-300/80">
@@ -618,6 +660,9 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+        {projReady && (
+          <CardLegend items={VERDICT_LEGEND} note="verdict · ▲ up  ■ flat  ▼ down" />
+        )}
       </Card>
 
       {/* ---------------------------------------------------------- */}
@@ -826,13 +871,14 @@ export default function Dashboard() {
               </ul>
 
               {prediction?.status === 'ok' && prediction.lead_lag.entries.length > 0 && (
+                <>
                 <div className="mt-4 overflow-hidden rounded-xl border border-slate-800">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-950/60 text-slate-400">
                       <tr>
                         <th className="px-3 py-2 font-medium">Symbol</th>
                         <th className="px-3 py-2 font-medium">Role</th>
-                        <th className="px-3 py-2 text-right font-medium">Lag</th>
+                        <th className="px-3 py-2 text-right font-medium">Lead (min)</th>
                         <th className="px-3 py-2 text-right font-medium">Corr</th>
                       </tr>
                     </thead>
@@ -864,6 +910,11 @@ export default function Dashboard() {
                     </tbody>
                   </table>
                 </div>
+                <CardLegend
+                  items={ROLE_LEGEND}
+                  note="Lead = min ahead of QQQ · 0 = coincident"
+                />
+                </>
               )}
 
               {prediction?.status !== 'ok' && (
@@ -915,6 +966,7 @@ export default function Dashboard() {
                     </p>
                   </div>
                 </div>
+                <CardLegend items={CONFIRM_LEGEND} note="state of the current QQQ move" />
               </>
             ) : (
               <p className="mt-3 text-sm text-slate-400">
@@ -1006,6 +1058,7 @@ export default function Dashboard() {
                   </div>
                 </div>
                 <p className="mt-3 text-xs leading-5 text-slate-400">{breadth.message}</p>
+                <CardLegend items={BREADTH_LEGEND} note="participation across the 100 stocks" />
               </>
             ) : (
               <p className="mt-3 text-sm text-slate-400">
@@ -1043,6 +1096,7 @@ export default function Dashboard() {
                     : 'Treat lead/lag as noise today.'}
                 </p>
                 <p className="mt-2 text-xs leading-5 text-slate-400">{corrRegime.message}</p>
+                <CardLegend items={REGIME_LEGEND} note="how tightly tech sectors move together" />
               </>
             ) : (
               <p className="mt-3 text-sm text-slate-400">
