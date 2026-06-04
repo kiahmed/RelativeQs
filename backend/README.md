@@ -1,4 +1,4 @@
-FastAPI backend for Price Flow Tracker
+FastAPI backend for RelativeQs
 
 Overview
 - FastAPI service providing:

@@ -2,8 +2,9 @@ import { create } from 'zustand'
 import {
   calculateMarketSignalSummary,
   calculateQQQHealth,
+  deriveQQQHealth,
   calculateFragilityMeter,
-  calculateLeadLag,
+  deriveLeadLag,
   calculateAIConcentration,
   etfSignals,
   flowHistory,
@@ -21,8 +22,14 @@ import {
   ChartPoint,
   ComparisonPoint,
   CorrelationPoint,
+  PredictionPayload,
 } from '../data/marketSignals'
-import { fetchLiveMarketSnapshot, fetchLiveQQQScore, MarketSnapshot } from '../services/marketApi'
+import {
+  fetchLiveMarketSnapshot,
+  fetchLiveQQQScore,
+  fetchPrediction,
+  MarketSnapshot,
+} from '../services/marketApi'
 import { createBackendClient } from '../services/backendClient'
 import { WS_URL } from '../config'
 
@@ -32,7 +39,7 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
  * Transform backend signals format { "XLK_mom": 0.05, ... } 
  * into ETFSignal[] for frontend display
  */
-function transformBackendSignals(signals: Record<string, number>): ETFSignal[] {
+export function transformBackendSignals(signals: Record<string, number>): ETFSignal[] {
   const etfMap: Record<string, Partial<ETFSignal>> = {
     XLK: { name: 'Technology Select', symbol: 'XLK' },
     SMH: { name: 'Semiconductor', symbol: 'SMH' },
@@ -104,6 +111,7 @@ export type MarketState = {
   qqqScore: QQQScore
   fragilityMeter: FragilityMeter
   leadLag: LeadLagSignal
+  prediction: PredictionPayload | null
   aiConcentration: AIConcentration
   loading: boolean
   refresh: () => Promise<void>
@@ -112,10 +120,13 @@ export type MarketState = {
   wsConnected: boolean
 }
 
-const buildState = (snapshot: MarketSnapshot) => {
+export const buildState = (
+  snapshot: MarketSnapshot,
+  prediction: PredictionPayload | null = null,
+) => {
   // Handle both old format (direct signals array) and new format (signals dict from backend)
-  const signals = Array.isArray(snapshot.signals) 
-    ? snapshot.signals 
+  const signals = Array.isArray(snapshot.signals)
+    ? snapshot.signals
     : transformBackendSignals(snapshot.signals || {})
   
   const flow = snapshot.flowHistory || snapshot.flow_series || flowHistory
@@ -148,10 +159,11 @@ const buildState = (snapshot: MarketSnapshot) => {
     rollingCorrelation: rollingCorr,
     breadthHistory: breadthHist,
     summary: calculateMarketSignalSummary(signals),
-    qqqHealth: calculateQQQHealth(signals),
+    qqqHealth: deriveQQQHealth(prediction, signals),
     qqqScore,
     fragilityMeter: calculateFragilityMeter(signals),
-    leadLag: calculateLeadLag(signals),
+    leadLag: deriveLeadLag(prediction),
+    prediction,
     aiConcentration: calculateAIConcentration(signals),
   }
 }
@@ -194,13 +206,24 @@ export const useMarketStore = create<MarketState>((set) => {
         anyGlobal.__pf_ws_client = createBackendClient(wsUrl)
         anyGlobal.__pf_ws_client.onSnapshot((payload: MarketSnapshot) => {
           try {
-            set({ ...buildState(payload) })
+            set((state) => ({ ...buildState(payload, state.prediction) }))
           } catch (e) {
             console.error('Failed to apply snapshot', e)
           }
         })
         anyGlobal.__pf_ws_client.onQQQScore((payload: QQQScore) => {
           set({ qqqScore: payload })
+        })
+        anyGlobal.__pf_ws_client.onPrediction((payload: PredictionPayload) => {
+          try {
+            set((state) => ({
+              prediction: payload,
+              leadLag: deriveLeadLag(payload),
+              qqqHealth: deriveQQQHealth(payload, state.signals),
+            }))
+          } catch (e) {
+            console.error('Failed to apply prediction', e)
+          }
         })
         anyGlobal.__pf_ws_client.connect()
         set({ wsConnected: true })
@@ -218,8 +241,9 @@ export const useMarketStore = create<MarketState>((set) => {
       set({ loading: true })
       const snapshot = await fetchLiveMarketSnapshot()
       const qqqScore = await fetchLiveQQQScore()
+      const prediction = await fetchPrediction()
       set({
-        ...buildState({ ...snapshot, qqqScore: qqqScore ?? undefined }),
+        ...buildState({ ...snapshot, qqqScore: qqqScore ?? undefined }, prediction),
         loading: false,
       })
     },

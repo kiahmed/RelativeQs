@@ -10,6 +10,7 @@ import {
   type CorrelationPoint,
   type ChartPoint,
   type QQQScore,
+  type PredictionPayload,
 } from '../data/marketSignals'
 import { BACKEND_URL } from '../config'
 
@@ -42,8 +43,23 @@ export async function fetchLiveQQQScore(): Promise<QQQScore | null> {
   }
 }
 
+export async function fetchPrediction(): Promise<PredictionPayload | null> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/prediction`)
+    if (!response.ok) {
+      console.error('Failed to fetch prediction:', response.statusText)
+      return null
+    }
+    const data: PredictionPayload = await response.json()
+    return data
+  } catch (error) {
+    console.error('[Frontend] Failed to fetch prediction:', error)
+    return null
+  }
+}
+
 /**
- * Transform backend signals format { "XLK_mom": 0.05, ... } 
+ * Transform backend signals format { "XLK_mom": 0.05, ... }
  * into ETFSignal[] for frontend display
  */
 function transformBackendSignals(signals: Record<string, number>): ETFSignal[] {
