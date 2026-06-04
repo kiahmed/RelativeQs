@@ -343,8 +343,10 @@ export default function Dashboard() {
   )
 
   useEffect(() => {
+    // background poll is silent (no loading flag) so the UI doesn't flicker/reflow
+    // every cycle; the manual refresh button passes silent=false for visible feedback.
     const run = () => {
-      refresh()
+      refresh(true)
       setUpdatedAt(new Date())
     }
     run()
@@ -1119,8 +1121,8 @@ export default function Dashboard() {
                   <XAxis dataKey="name" tick={axisTick} tickLine={false} axisLine={false} />
                   <YAxis tick={axisTick} tickLine={false} axisLine={false} width={36} domain={[0, 1]} />
                   <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="qqqXlk" name="QQQ·XLK" fill="#22d3ee" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="qqqSmh" name="QQQ·SMH" fill="#a78bfa" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="qqqXlk" name="QQQ·XLK" fill="#22d3ee" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                  <Bar dataKey="qqqSmh" name="QQQ·SMH" fill="#a78bfa" radius={[4, 4, 0, 0]} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

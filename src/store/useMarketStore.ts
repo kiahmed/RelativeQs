@@ -114,7 +114,8 @@ export type MarketState = {
   prediction: PredictionPayload | null
   aiConcentration: AIConcentration
   loading: boolean
-  refresh: () => Promise<void>
+  /** silent=true skips the loading flag (background poll) so the UI doesn't flicker */
+  refresh: (silent?: boolean) => Promise<void>
   startRealtime: (wsUrl?: string) => void
   stopRealtime: () => void
   wsConnected: boolean
@@ -237,15 +238,16 @@ export const useMarketStore = create<MarketState>((set) => {
         set({ wsConnected: false })
       }
     },
-    refresh: async () => {
-      set({ loading: true })
-      const snapshot = await fetchLiveMarketSnapshot()
-      const qqqScore = await fetchLiveQQQScore()
-      const prediction = await fetchPrediction()
-      set({
-        ...buildState({ ...snapshot, qqqScore: qqqScore ?? undefined }, prediction),
-        loading: false,
-      })
+    refresh: async (silent = false) => {
+      if (!silent) set({ loading: true })
+      try {
+        const snapshot = await fetchLiveMarketSnapshot()
+        const qqqScore = await fetchLiveQQQScore()
+        const prediction = await fetchPrediction()
+        set({ ...buildState({ ...snapshot, qqqScore: qqqScore ?? undefined }, prediction) })
+      } finally {
+        if (!silent) set({ loading: false })
+      }
     },
   }
 })
