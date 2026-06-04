@@ -53,7 +53,7 @@ export default function BillingSuccess() {
           </div>
           <h1 className="mt-6 text-2xl font-semibold text-white">You&apos;re on Pro</h1>
           <p className="mt-2 text-slate-400">
-            Your subscription is active. Thanks for supporting Price Flow Tracker.
+            Your subscription is active. Thanks for supporting RelativeQs.
           </p>
           <Link
             to="/dashboard"

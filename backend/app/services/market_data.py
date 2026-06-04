@@ -4,13 +4,25 @@ import random
 import time
 import json
 import logging
+from datetime import datetime
 from typing import Dict, Any, List, Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
 from app.config import settings
 from app.core.qqq_score import QQQScoreEngine
+from app.core.lead_lag import LeadLagEngine
+from app.core.intraday_score import IntradayScoreEngine
+from app.core.projection import ProjectionEngine
+from app.core.attribution import DriverAttributionEngine
+from app.core.confirmation import ConfirmationGate
+from app.core.correlation_regime import CorrelationRegimeEngine
+from app.core.stability import StabilityEngine
+from app.core.hit_rate import HitRateEngine
+from app.core.breadth import BreadthEngine
+from app.services.holdings import HoldingsProvider
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +43,14 @@ class MarketDataService:
         self.mode = mode
         self._tick = 0
         self.qqq_engine = QQQScoreEngine()
+        # Yahoo fetch throttle: remember the last download path call (monotonic)
+        # and the frame it returned, so repeated calls inside the throttle window
+        # reuse the in-process frame instead of hammering the provider.
+        self._last_yahoo_fetch: float = 0.0
+        self._last_yahoo_frame: Optional[pd.DataFrame] = None
+        # (period, interval) of the remembered frame — the throttle only reuses
+        # it for an identical request so a 7d backfill never gets served a 1d frame.
+        self._last_yahoo_params: tuple = (None, None)
 
     def _resolve_provider(self) -> str:
         provider = (self.mode or settings.DATA_PROVIDER or os.getenv("DATA_PROVIDER", "mock")).lower()
@@ -57,6 +77,18 @@ class MarketDataService:
             provider = chosen or "yahoo"
         logger.info("[MARKET] resolved provider: %s", provider)
         return provider
+
+    def _should_fetch_prepost(self) -> bool:
+        """True when extended-hours fetching is enabled and the current time is
+        outside the regular session (9:30-16:00 ET, weekdays). This keeps
+        pre-market, after-hours, overnight, and weekend fetches returning
+        extended-hours bars until the next session opens."""
+        if not settings.FETCH_PRE_POST_MARKET:
+            return False
+        now = datetime.now(ZoneInfo("America/New_York"))
+        minutes = now.hour * 60 + now.minute
+        regular_session = now.weekday() < 5 and (9 * 60 + 30 <= minutes < 16 * 60)
+        return not regular_session
 
     async def fetch_snapshot(self, use_cache: bool = True) -> Dict[str, Any]:
         if self.mode != "mock":
@@ -102,7 +134,7 @@ class MarketDataService:
         if yf is None:
             return await self._mock_snapshot()
 
-        symbols = ["XLK", "SMH", "QQQ", "XLY", "XLF", "XLI", "IWM", "XLE", "XLP", "TLT"]
+        symbols = list(settings.ETF_UNIVERSE)
         provider = self._resolve_provider()
 
         # Intraday bars so the momentum / breadth signals actually move during
@@ -115,7 +147,9 @@ class MarketDataService:
         except Exception:
             cache = None
 
-        cache_key = f"history:{provider}:{interval}:{','.join(symbols)}"
+        # include the extended-hours state so a regular-hours frame cached just
+        # before a window transition isn't served as extended-hours data (and vice versa)
+        cache_key = f"history:{provider}:{interval}:prepost={int(self._should_fetch_prepost())}:{','.join(symbols)}"
         df = None
         # The background poll loop fetches fresh every cycle (use_cache=False);
         # the read-through cache only shields rare on-demand API fallbacks so a
@@ -208,9 +242,17 @@ class MarketDataService:
         # Align every series onto a shared date index before slicing, otherwise
         # the per-symbol series can differ in length and idx-based access both
         # misaligns dates/values and raises IndexError on the shorter series.
-        aligned = pd.DataFrame(
-            {"qqq": qqq, "xlk": xlk, "smh": smh, "xly": xly, "xlp": xlp}
-        ).dropna().tail(30)
+        # ffill before dropna: extended-hours bars are sparse for thin ETFs (XLP),
+        # so requiring all symbols to trade in the same minute would truncate the
+        # series at the close; carry the last trade forward instead.
+        # Build the chart frame only from columns actually present, so a custom
+        # ETF_UNIVERSE without XLK/SMH/XLY/XLP doesn't crash the snapshot. The
+        # chart symbols are all in the default universe, so they normally appear.
+        chart_cols = {"qqq": qqq}
+        for name, sym in (("xlk", "XLK"), ("smh", "SMH"), ("xly", "XLY"), ("xlp", "XLP")):
+            if sym in data.columns:
+                chart_cols[name] = series(sym)
+        aligned = pd.DataFrame(chart_cols).ffill().dropna().tail(30)
 
         # intraday bars share a calendar date, so label points with the time too
         timestamps = [d.strftime("%m-%d %H:%M") for d in aligned.index]
@@ -219,21 +261,26 @@ class MarketDataService:
             for idx, ts in enumerate(timestamps)
         ]
 
+        def _col(idx, col):
+            return float(aligned[col].iloc[idx]) if col in aligned.columns else 0.0
+
         qqq_comparison = [
             {
                 "name": ts,
                 "qqq": float(aligned["qqq"].iloc[idx]),
-                "xlk": float(aligned["xlk"].iloc[idx]),
-                "smh": float(aligned["smh"].iloc[idx]),
+                "xlk": _col(idx, "xlk"),
+                "smh": _col(idx, "smh"),
             }
             for idx, ts in enumerate(timestamps)
         ]
 
-        xly_xlp_ratio = [
-            {"name": ts, "value": float(aligned["xly"].iloc[idx] / aligned["xlp"].iloc[idx])}
-            for idx, ts in enumerate(timestamps)
-            if aligned["xlp"].iloc[idx] != 0
-        ]
+        xly_xlp_ratio = []
+        if "xly" in aligned.columns and "xlp" in aligned.columns:
+            xly_xlp_ratio = [
+                {"name": ts, "value": float(aligned["xly"].iloc[idx] / aligned["xlp"].iloc[idx])}
+                for idx, ts in enumerate(timestamps)
+                if aligned["xlp"].iloc[idx] != 0
+            ]
 
         def rolling_corr(series_a, series_b, window=10, key="qqqXlk"):
             aligned = pd.DataFrame({"a": series_a, "b": series_b}).dropna()
@@ -319,13 +366,13 @@ class MarketDataService:
                 adapter = FinnhubAdapter()
                 df = await adapter.fetch_history(symbols, period=period, interval=interval)
             elif provider == "yahoo" and yf is not None:
-                df = await asyncio.to_thread(self._download_intraday_history, symbols, period=period, interval=interval)
+                df = await self._throttled_yahoo_download(symbols, period=period, interval=interval)
             elif provider in ("auto", "best") and yf is not None:
                 logger.info("[MARKET] Auto provider failed or unavailable, falling back to Yahoo intraday for symbols: %s", symbols)
-                df = await asyncio.to_thread(self._download_intraday_history, symbols, period=period, interval=interval)
+                df = await self._throttled_yahoo_download(symbols, period=period, interval=interval)
 
             if df is None and provider == "yahoo" and yf is not None:
-                df = await asyncio.to_thread(self._download_intraday_history, symbols, period=period, interval=interval)
+                df = await self._throttled_yahoo_download(symbols, period=period, interval=interval)
         except Exception:
             elapsed = time.monotonic() - started
             logger.exception(
@@ -345,6 +392,104 @@ class MarketDataService:
         )
         return None
 
+    async def _throttled_yahoo_download(self, symbols: List[str], period: str, interval: str):
+        """Call the Yahoo download path at most once per
+        YAHOO_MIN_FETCH_INTERVAL_SECONDS; otherwise return the remembered frame.
+
+        Guards against hammering the free Yahoo endpoint when several callers
+        (poll loop, on-demand API fallbacks) fetch in quick succession.
+        """
+        now = time.monotonic()
+        elapsed = now - self._last_yahoo_fetch
+        if (self._last_yahoo_frame is not None
+                and self._last_yahoo_params == (period, interval)
+                and elapsed < settings.YAHOO_MIN_FETCH_INTERVAL_SECONDS):
+            logger.info(
+                "[YAHOO] throttle: reusing %s/%s frame fetched %.1fs ago (< %.1fs)",
+                period, interval, elapsed, settings.YAHOO_MIN_FETCH_INTERVAL_SECONDS,
+            )
+            return self._last_yahoo_frame
+        df = await asyncio.to_thread(
+            self._download_intraday_history, symbols, period=period, interval=interval
+        )
+        self._last_yahoo_fetch = time.monotonic()
+        if df is not None and not getattr(df, "empty", True):
+            self._last_yahoo_frame = df
+            self._last_yahoo_params = (period, interval)
+        return df
+
+    def _split_bars_by_et_date(self, bars: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+        """Group a multi-day 1m frame into {ET-date: sub-frame} so each day can be
+        seeded under its own history-store key."""
+        if bars is None or getattr(bars, "empty", True):
+            return {}
+        idx = bars.index
+        try:
+            et_idx = idx.tz_convert(ZoneInfo("America/New_York")) if idx.tz is not None else idx
+        except (AttributeError, TypeError):
+            et_idx = idx
+        labels = [pd.Timestamp(ts).strftime("%Y-%m-%d") for ts in et_idx]
+        groups: Dict[str, pd.DataFrame] = {}
+        for label in sorted(set(labels)):
+            mask = [l == label for l in labels]
+            groups[label] = bars.loc[mask]
+        return groups
+
+    async def _backfill_recent_sessions(self, history_store) -> None:
+        """Seed the history store from a data provider when the cache is cold, so
+        cross-day signals (stability, hit-rate) work on day one. Redis stays a
+        short-term rolling cache; the provider is the source of truth.
+
+        Source is settings.HISTORY_BACKFILL_SOURCE: "provider" (DATA_PROVIDER),
+        "yahoo" (force Yahoo), or "none" (disabled).
+        """
+        if not getattr(settings, "HISTORY_BACKFILL_ENABLED", True):
+            return
+        source = getattr(settings, "HISTORY_BACKFILL_SOURCE", "provider")
+        if source == "none":
+            return
+        min_sessions = getattr(settings, "HISTORY_BACKFILL_MIN_SESSIONS", 5)
+        try:
+            existing = await history_store.get_recent_sessions()
+        except Exception:
+            logger.exception("[BACKFILL] could not read existing sessions")
+            existing = []
+        if existing and len(existing) >= min_sessions:
+            return  # cache already warm enough
+
+        days = getattr(settings, "HISTORY_BACKFILL_DAYS", 7)
+        symbols = list(settings.ETF_UNIVERSE)
+        period = f"{days}d"
+        logger.info("[BACKFILL] cold cache (%d sessions) — seeding %s from %s",
+                    len(existing), period, source)
+        try:
+            if source == "yahoo":
+                # bypass the provider router and the in-process throttle: backfill is
+                # rare (cold cache only) and needs its own wide-window frame.
+                frame = await asyncio.to_thread(
+                    self._download_intraday_history, symbols, period=period, interval="1m"
+                )
+            else:
+                frame = await self._fetch_history_from_provider(
+                    symbols, period=period, interval="1m"
+                )
+        except Exception:
+            logger.exception("[BACKFILL] provider fetch failed")
+            return
+        if frame is None or getattr(frame, "empty", True):
+            logger.warning("[BACKFILL] no data returned; skipping seed")
+            return
+
+        seeded_bars = 0
+        groups = self._split_bars_by_et_date(frame.sort_index())
+        for date_label, sub in groups.items():
+            try:
+                seeded_bars += await history_store.seed_session(date_label, sub)
+            except Exception:
+                logger.exception("[BACKFILL] seed failed for %s", date_label)
+        logger.info("[BACKFILL] seeded %d bars across %d sessions from %s",
+                    seeded_bars, len(groups), source)
+
     async def fetch_intraday_history(self, symbols: List[str], period: str = "7d", interval: str = "1m") -> Optional[pd.DataFrame]:
         df = await self._fetch_history_from_provider(symbols, period=period, interval=interval)
         if df is None or df.empty:
@@ -355,7 +500,7 @@ class MarketDataService:
 
     async def fetch_qqq_score(self, period: str = "2y", interval: str = "1d") -> Dict[str, Any]:
         logger.info("[MARKET] Computing QQQ score for interval=%s, period=%s", interval, period)
-        symbols = ["XLK", "SMH", "QQQ", "XLY", "XLF", "XLI", "IWM", "XLE"]
+        symbols = list(settings.ETF_UNIVERSE)
         data = await self.fetch_intraday_history(symbols, period=period, interval=interval)
         if data is None or data.empty:
             logger.warning("[MARKET] No intraday history available, returning mock QQQ score")
@@ -364,6 +509,157 @@ class MarketDataService:
         score["timestamp"] = int(time.time())
         score["provider"] = self._resolve_provider()
         return score
+
+    async def fetch_breadth(self) -> Dict[str, Any]:
+        """Nasdaq-100 breadth from the constituents' session open vs latest price.
+
+        One batched 1m fetch of the ~100 constituents (offloaded to a thread);
+        both equal-weight and cap-weight breadth are computed from that single
+        pull. Separate symbol set from the ETF universe, so it's its own batch —
+        run once per poll cycle, which is already within the rate-limit guard.
+        """
+        engine = BreadthEngine()
+        if not getattr(settings, "BREADTH_ENABLED", True):
+            return engine._empty("no_data")
+
+        weights = HoldingsProvider().get_constituents()
+        if not weights:
+            return engine._empty("no_data")
+
+        symbols = list(weights.keys())
+        try:
+            # constituents are a distinct symbol set from the ETF universe, so
+            # fetch directly (bypassing the universe throttle which memoizes one
+            # frame); this runs once per ~1-minute cycle.
+            bars = await asyncio.to_thread(
+                self._download_intraday_history, symbols, "1d", "1m"
+            )
+        except Exception:
+            logger.exception("[BREADTH] constituent fetch failed")
+            return engine._empty("warming_up", len(weights))
+
+        if bars is None or getattr(bars, "empty", True):
+            return engine._empty("warming_up", len(weights))
+
+        bars = bars.sort_index()
+        opens: Dict[str, float] = {}
+        lasts: Dict[str, float] = {}
+        for sym in symbols:
+            if sym not in bars.columns:
+                continue
+            series = bars[sym].dropna()
+            if len(series) < 1:
+                continue
+            opens[sym] = float(series.iloc[0])
+            lasts[sym] = float(series.iloc[-1])
+
+        return engine.compute(opens, lasts, weights)
+
+    async def fetch_prediction(self, history_store=None) -> Dict[str, Any]:
+        """Compute the intraday QQQ prediction from accumulated session bars.
+
+        Fetches 1m bars for the configured ETF universe, optionally merges them
+        into the supplied history store (so lead/lag runs on the whole session,
+        not just the latest fetch), then runs the lead/lag, composite-score, and
+        projection engines and assembles the prediction payload.
+        """
+        logger.info("[PREDICT] computing prediction for universe=%s", settings.ETF_UNIVERSE)
+        symbols = list(settings.ETF_UNIVERSE)
+
+        # Extended-hours window: pull a slightly wider span so the session frame
+        # spans pre/post-market bars; regular session uses today's bars only.
+        period = "5d" if self._should_fetch_prepost() else "1d"
+        bars = await self.fetch_intraday_history(symbols, period=period, interval="1m")
+
+        if history_store is not None:
+            try:
+                # Seed past sessions from the provider when the cache is cold so the
+                # cross-day signals work on day one (no multi-day self-collection wait).
+                await self._backfill_recent_sessions(history_store)
+            except Exception:
+                logger.exception("[PREDICT] backfill failed; continuing")
+            try:
+                if bars is not None and not getattr(bars, "empty", True):
+                    await history_store.append_bars(bars)
+                stored = await history_store.get_session_bars()
+                if stored is not None and not getattr(stored, "empty", True):
+                    bars = stored
+            except Exception:
+                logger.exception("[PREDICT] history store merge failed; using fetched bars")
+
+        lead_lag = LeadLagEngine().compute(bars)
+        score = IntradayScoreEngine().compute(bars, lead_lag)
+        projection = ProjectionEngine().compute(bars, lead_lag, score)
+
+        # --- Phase 2 value features (each guarded; degrade to the engine's own
+        # warming_up shape rather than throwing). ---
+        try:
+            attribution = DriverAttributionEngine().compute(bars)
+        except Exception:
+            logger.exception("[PREDICT] attribution failed; using warming_up")
+            attribution = DriverAttributionEngine()._empty("warming_up")
+        try:
+            confirmation = ConfirmationGate().compute(bars, lead_lag, score)
+        except Exception:
+            logger.exception("[PREDICT] confirmation failed; using warming_up")
+            confirmation = ConfirmationGate()._warming_up()
+        try:
+            correlation_regime = CorrelationRegimeEngine().compute(bars)
+        except Exception:
+            logger.exception("[PREDICT] correlation regime failed; using warming_up")
+            correlation_regime = CorrelationRegimeEngine()._empty("warming_up")
+
+        # Cross-session features need the history store. Without one they stay
+        # in a populated warming_up/gathering shape.
+        stability = StabilityEngine()._result(
+            "warming_up", None, "gathering", "Gathering data — 0 sessions so far."
+        )
+        hit_rate = HitRateEngine()._empty(
+            "warming_up", None, 5, "auto", "Gathering data — no history yet."
+        )
+        if history_store is not None:
+            try:
+                sessions = await history_store.get_recent_sessions()
+                stability = StabilityEngine().compute(sessions, lead_lag)
+            except Exception:
+                logger.exception("[PREDICT] stability failed; using warming_up")
+            try:
+                recent = await history_store.get_recent_bars()
+                hit_rate = HitRateEngine().compute(
+                    recent if recent is not None else bars, lead_lag
+                )
+            except Exception:
+                logger.exception("[PREDICT] hit_rate failed; using warming_up")
+
+        # Nasdaq-100 breadth — real constituent participation (own batch fetch).
+        try:
+            breadth = await self.fetch_breadth()
+        except Exception:
+            logger.exception("[PREDICT] breadth failed; using no_data")
+            breadth = BreadthEngine()._empty("no_data")
+
+        prediction = {
+            "timestamp": int(time.time()),
+            "status": lead_lag["status"],
+            "bars_used": lead_lag["bars_used"],
+            "universe": list(settings.ETF_UNIVERSE),
+            "target": settings.PREDICTION_TARGET,
+            "lead_lag": lead_lag,
+            "score": score,
+            "projection": projection,
+            "attribution": attribution,
+            "confirmation": confirmation,
+            "correlation_regime": correlation_regime,
+            "stability": stability,
+            "hit_rate": hit_rate,
+            "breadth": breadth,
+        }
+        logger.info(
+            "[PREDICT] status=%s bars=%d verdict=%s direction=%s",
+            prediction["status"], prediction["bars_used"],
+            score.get("verdict"), projection.get("direction"),
+        )
+        return prediction
 
     def _mock_qqq_score(self) -> Dict[str, Any]:
         np.random.seed(int(time.time()) % 100000 + self._tick)
@@ -389,10 +685,14 @@ class MarketDataService:
         }
 
     def _download_intraday_history(self, symbols: List[str], period: str = "7d", interval: str = "1m"):
+        prepost = self._should_fetch_prepost()
+        if prepost:
+            logger.info("[YAHOO] Extended-hours window active, requesting pre/post market bars")
         raw = yf.download(
             tickers=symbols,
             period=period,
             interval=interval,
+            prepost=prepost,
             auto_adjust=True,
             progress=False,
             threads=False,

@@ -3,7 +3,7 @@ import os
 import logging
 from typing import Optional
 from app.services.market_data import MarketDataService
-from app.services.cache import RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY
+from app.services.cache import RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY, PREDICTION_KEY
 from app.core.score_engine import ScoreEngine
 from app.config import settings
 from app import auth, supabase_admin, alerts
@@ -51,6 +51,21 @@ async def qqq_score(interval: Optional[str] = "1d", period: Optional[str] = "2y"
     score = await market.fetch_qqq_score(period=period or "2y", interval=interval or "1d")
     logger.debug("[API] QQQ score payload: %s", score)
     return score
+
+@router.get("/prediction")
+async def prediction():
+    logger.info("[API] GET /prediction")
+    # Served from the Redis cache the background poll loop keeps fresh; only
+    # compute on demand if the cache is empty (Redis down, or loop not started).
+    cached = await cache.get(PREDICTION_KEY)
+    if cached:
+        logger.info("[API] Prediction served from Redis (status=%s)", cached.get("status"))
+        return cached
+    logger.info("[API] Prediction cache miss — computing on demand")
+    pred = await market.fetch_prediction()
+    logger.info("[API] Prediction computed (status=%s)", pred.get("status"))
+    return pred
+
 
 # --------------------------------------------------------------------------
 # Authentication
@@ -115,7 +130,7 @@ async def send_test_alert(user: dict = Depends(auth.require_pro)):
             detail="Email is not configured on the server (RESEND_API_KEY is not set).",
         )
     ok = await alerts.send_email(
-        email, "Test alert — Price Flow Tracker", alerts.test_email_html()
+        email, "Test alert — RelativeQs", alerts.test_email_html()
     )
     if not ok:
         raise HTTPException(

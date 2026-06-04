@@ -80,7 +80,7 @@ def test_email_html() -> str:
     return (
         '<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto">'
         '<h2 style="color:#22d3ee;margin-bottom:4px">Test alert &#10003;</h2>'
-        '<p style="color:#475569">This is a test email from Price Flow Tracker. '
+        '<p style="color:#475569">This is a test email from RelativeQs. '
         "Your regime-change alerts are wired up correctly — you'll get an email "
         "like this whenever QQQ flips between risk-on and risk-off.</p>"
         '<p style="font-size:13px;color:#94a3b8">No action needed. This is a '

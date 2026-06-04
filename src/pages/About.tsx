@@ -47,12 +47,12 @@ export default function About() {
             About us
           </p>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-            Making the market&apos;s posture legible
+            Making tech&apos;s posture legible
           </h1>
           <p className="mt-4 text-base leading-7 text-slate-300">
-            Price Flow Tracker watches the sector ETFs behind the Nasdaq-100 and turns
-            them into one clear read — the market&apos;s trend regime, plus the leadership,
-            breadth, and fragility behind it. No noise, no hype.
+            RelativeQs watches the Nasdaq-100 (QQQ) and the sector ETFs that drive it,
+            and turns them into one clear read — is tech risk-on or risk-off, plus the
+            leadership, breadth, and fragility behind the move. No noise, no hype.
           </p>
         </div>
       </section>
@@ -77,7 +77,7 @@ export default function About() {
         </p>
         <h2 className="mt-2 text-2xl font-semibold text-white">Built by traders and engineers</h2>
         <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-300">
-          We built Price Flow Tracker because watching QQQ alone tells you almost
+          We built RelativeQs because watching QQQ alone tells you almost
           nothing about whether a move is healthy. The answer lives in the internals —
           which sectors lead, whether breadth confirms, and where price sits relative
           to its long-term trend. Our mission is to make that picture clear enough to

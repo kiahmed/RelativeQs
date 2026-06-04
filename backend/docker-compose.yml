@@ -1,7 +1,12 @@
+# Project name -> prefixes every compose-created resource (default network,
+# volumes) with "rq_backend" instead of the directory-derived "backend".
+# e.g. the default network becomes rq_backend_default.
+name: rq_backend
+
 services:
-  web:
+  rq-web-service:
     build: .
-    container_name: relativeqs-backend
+    container_name: rq-backend
     ports:
       - "8001:8000"
     env_file:

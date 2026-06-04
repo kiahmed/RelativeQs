@@ -1,7 +1,16 @@
 import pytest
 
+from app.config import settings
 from app.services.adapters.alphavantage import AlphaVantageAdapter
 from app.services.adapters.twelvedata import TwelveDataAdapter
+
+
+@pytest.fixture(autouse=True)
+def no_env_keys(monkeypatch):
+    # The adapters fall back to settings.* keys loaded from .env; clear them so
+    # these "no key" tests stay offline regardless of the local environment.
+    monkeypatch.setattr(settings, "ALPHAVANTAGE_KEY", None)
+    monkeypatch.setattr(settings, "TWELVEDATA_KEY", None)
 
 
 @pytest.mark.asyncio

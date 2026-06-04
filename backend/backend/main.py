@@ -32,7 +32,7 @@ from app.services.market_data import MarketDataService
 from app.config import settings
 from app import alerts
 
-app = FastAPI(title="Price Flow Tracker - Backend")
+app = FastAPI(title="RelativeQs - Backend")
 
 # Allow local frontend origins; adjust for production.
 # 5173 = `npm run dev` (Vite dev server), 4173 = `npm run preview` (built app).
@@ -72,9 +72,13 @@ async def shutdown_event():
 
 
 async def _poll_and_broadcast():
-    from app.services.cache import RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY
+    from app.services.cache import RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY, PREDICTION_KEY
+    from app.services.history_store import IntradayHistoryStore
 
     cache = RedisCache()
+    # One history store for the loop's lifetime: it accumulates 1m bars across
+    # cycles so the lead/lag engine sees the whole session, not just one fetch.
+    history_store = IntradayHistoryStore(cache=cache)
     # Keep the cached payloads alive a few cycles longer than the poll interval
     # so one slow/failed fetch doesn't leave the API serving an empty cache.
     cache_ttl = max(int(settings.POLL_INTERVAL_SECONDS) * 3, 60)
@@ -90,13 +94,33 @@ async def _poll_and_broadcast():
             # pulls genuinely fresh data and writes it to Redis for the API/UI.
             snapshot = await market.fetch_snapshot(use_cache=False)
             qqq_score = await market.fetch_qqq_score()
+            # The score is computed from daily bars, so its "price" is pinned to
+            # the last regular-session close. Override with the freshest intraday
+            # price from the snapshot (includes pre/post market bars when active).
+            flow = snapshot.get("flow_series") or []
+            if flow and qqq_score.get("price"):
+                qqq_score["price"] = float(flow[-1]["QQQ"])
+
+            # Intraday prediction: accumulate session bars in the history store
+            # and run the lead/lag, score, and projection engines.
+            prediction = await market.fetch_prediction(history_store=history_store)
+            # Backfill the legacy qqq_score fields the existing UI reads, so the
+            # measured lead/lag and composite signal show up without a schema break.
+            try:
+                qqq_score["lead_lag"] = prediction["lead_lag"]["entries"]
+                qqq_score["lead_signal"] = prediction["score"]["score"]
+            except Exception:
+                logger.exception("[POLL] failed to backfill qqq_score from prediction")
+
             # publish the freshest payloads to Redis — this is the process that
             # keeps the cache the frontend reads continuously up to date.
             await cache.set(SNAPSHOT_KEY, snapshot, expire=cache_ttl)
             await cache.set(QQQ_SCORE_KEY, qqq_score, expire=cache_ttl)
+            await cache.set(PREDICTION_KEY, prediction, expire=cache_ttl)
             # broadcast to websocket clients
             await ws_manager.broadcast({"type": "snapshot", "payload": snapshot})
             await ws_manager.broadcast({"type": "qqq_score", "payload": qqq_score})
+            await ws_manager.broadcast({"type": "prediction", "payload": prediction})
 
             elapsed = time.monotonic() - started
             logger.info(

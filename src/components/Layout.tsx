@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore'
+import Logo from './Logo'
 
 /** Shown while a lazy-loaded page chunk is being fetched. */
 function PageFallback() {
@@ -28,11 +29,11 @@ export default function Layout() {
       <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-4 py-3.5 sm:px-6">
           <Link to="/" className="group flex items-center gap-2.5">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-base font-bold text-slate-950 shadow-glow transition group-hover:scale-105">
-              ◈
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-glow transition group-hover:scale-105">
+              <Logo className="h-5 w-5" />
             </span>
             <span className="text-lg font-semibold tracking-tight text-white">
-              Price Flow <span className="text-cyan-300">Tracker</span>
+              Relative<span className="text-cyan-300">Qs</span>
             </span>
           </Link>
 

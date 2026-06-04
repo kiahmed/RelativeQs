@@ -8,7 +8,9 @@ def rolling_zscore(series: pd.Series, window: int = 20) -> pd.Series:
     return (series - roll_mean) / roll_std
 
 def rolling_percentile(series: pd.Series, window: int = 20) -> pd.Series:
-    return series.rolling(window).apply(lambda x: (x[-1] <= x).mean(), raw=False)
+    # raw=True passes a numpy array so x[-1] is positional; with raw=False pandas 2.x
+    # treats x[-1] as a label lookup on the DatetimeIndex and raises KeyError
+    return series.rolling(window).apply(lambda x: (x[-1] <= x).mean(), raw=True)
 
 def rolling_correlation(series_a: pd.Series, series_b: pd.Series, window: int = 20) -> pd.Series:
     aligned = pd.concat([series_a, series_b], axis=1).dropna()

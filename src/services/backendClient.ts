@@ -2,11 +2,14 @@ type SnapshotHandler = (payload: any) => void
 
 type QQQScoreHandler = (payload: any) => void
 
+type PredictionHandler = (payload: any) => void
+
 export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
   let ws: WebSocket | null = null
   let reconnect = true
   let onSnapshot: SnapshotHandler | null = null
   let onQQQScore: QQQScoreHandler | null = null
+  let onPrediction: PredictionHandler | null = null
 
   function connect() {
     if (ws) return
@@ -24,6 +27,9 @@ export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
         }
         if (data?.type === 'qqq_score' && onQQQScore) {
           onQQQScore(data.payload)
+        }
+        if (data?.type === 'prediction' && onPrediction) {
+          onPrediction(data.payload)
         }
       } catch (e) {
         console.error('[backendClient] parse error', e)
@@ -62,5 +68,16 @@ export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
     onQQQScore = cb
   }
 
-  return { connect, disconnect, send, onSnapshot: onSnapshotCb, onQQQScore: onQQQScoreCb }
+  function onPredictionCb(cb: PredictionHandler | null) {
+    onPrediction = cb
+  }
+
+  return {
+    connect,
+    disconnect,
+    send,
+    onSnapshot: onSnapshotCb,
+    onQQQScore: onQQQScoreCb,
+    onPrediction: onPredictionCb,
+  }
 }

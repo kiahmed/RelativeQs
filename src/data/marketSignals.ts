@@ -61,6 +61,127 @@ export type LeadLagSignal = {
   details: string[]
 }
 
+export type LeadLagEntry = {
+  symbol: string
+  best_lag: number
+  best_corr: number
+  corr_at_zero: number
+  beta: number
+  role: 'leader' | 'confirmer' | 'diverging' | 'weak'
+}
+
+export type PredictionPayload = {
+  timestamp: number
+  status: 'ok' | 'warming_up' | 'no_data'
+  bars_used: number
+  universe: string[]
+  target: string
+  lead_lag: {
+    status: string
+    bars_used: number
+    target: string
+    entries: LeadLagEntry[]
+    leader: { symbol: string; lag_minutes: number; corr: number; beta: number } | null
+    confirmers: string[]
+    diverging: string[]
+  }
+  score: {
+    status: string
+    verdict: 'continue' | 'stall' | 'fragile' | 'warming_up'
+    score: number
+    probability_up: number
+    components: { leadership: number; broadening: number; fragility: number }
+    momentum_30m: Record<string, number>
+  }
+  projection: {
+    status: string
+    horizon_minutes: number
+    current_price: number
+    expected_return: number
+    projected_price: number
+    band_low: number
+    band_high: number
+    confidence: number
+    direction: 'up' | 'down' | 'flat'
+    basis: string
+  }
+  // --- Phase 2: 5 value features (optional = backward compatible if backend older) ---
+  attribution?: {
+    status: string
+    target: string
+    window_minutes: number
+    target_return: number
+    contributors: {
+      symbol: string
+      label: string
+      beta: number
+      contribution: number
+      share: number
+      trend: string
+    }[]
+    explained_share: number
+    residual_share: number
+    headline: string
+  }
+  confirmation?: {
+    status: string
+    state: 'confirmed' | 'unconfirmed' | 'fragile'
+    target_direction: 'up' | 'down' | 'flat'
+    participation: number
+    participating_count: number
+    universe_count: number
+    leaders_agree: boolean
+    fragility: number
+    message: string
+  }
+  correlation_regime?: {
+    status: string
+    regime: 'coupled' | 'transitional' | 'fragmented'
+    avg_pairwise_corr: number
+    dispersion: number
+    signals_reliable: boolean
+    message: string
+  }
+  stability?: {
+    status: string
+    leader: string | null
+    sessions_analyzed: number
+    lead_persistence: number
+    intraday_consistency: number
+    median_lag: number
+    tradeable: boolean
+    verdict: 'tradeable' | 'unstable' | 'gathering' | 'no_leader'
+    message: string
+  }
+  hit_rate?: {
+    status: string
+    leader: string | null
+    horizon_minutes: number
+    horizon_mode: 'auto' | 'manual'
+    sample_size: number
+    sessions: number
+    hit_rate: number
+    baseline: number
+    edge: number
+    by_horizon: Record<string, number>
+    message: string
+  }
+  breadth?: {
+    status: string
+    target: string
+    constituents_total: number
+    measured: number
+    advancers: number
+    decliners: number
+    unchanged: number
+    equal_weight_pct: number
+    cap_weight_pct: number
+    breadth_state: 'broad' | 'mixed' | 'narrow' | 'unknown'
+    divergence: number
+    message: string
+  }
+}
+
 export type AIConcentration = {
   topDrivers: string[]
   score: number
@@ -258,14 +379,62 @@ export function calculateQQQHealth(signals: ETFSignal[]): QQQHealth {
   const avgFragility = safeAverage(signals.map((item) => item.fragilityScore))
 
   const score = Math.max(0, Math.min(100, Math.round((avgMomentum * 7 + avgBreadth * 15 + avgAI * 0.4 - avgFragility * 5) + 35)))
-  const regime = avgAI >= 75 && avgBreadth >= 0.6 ? 'AI Breadth Expansion' : avgBreadth >= 0.55 ? 'Sector Leadership Broadening' : 'Leadership Narrowing'
-  const summary = `QQQ health is ${score}/100 with ${regime.toLowerCase()}.` 
+  const regime = avgAI >= 75 && avgBreadth >= 0.6 ? 'AI Breadth Expansion' : avgBreadth >= 0.55 ? 'Broad Participation' : 'Narrow Participation'
+  const summary = `QQQ health is ${score}/100 with ${regime.toLowerCase()}.`
 
   return {
     score,
     regime,
     breadth: `${Math.round(avgBreadth * 100)}% breadth`,
     summary,
+  }
+}
+
+/**
+ * Derive QQQ internal health from the live prediction payload — the real
+ * measured composite (leadership / broadening / fragility) plus participation
+ * breadth from per-symbol 30m momentum. Falls back to the placeholder-driven
+ * calculateQQQHealth() when no live prediction is available, which is why the
+ * old card was pinned near 70: transformBackendSignals never populated the
+ * aiExposure / fragility / breadth fields that calculation depends on.
+ */
+export function deriveQQQHealth(
+  prediction: PredictionPayload | null,
+  fallbackSignals: ETFSignal[],
+): QQQHealth {
+  if (!prediction || prediction.status !== 'ok' || prediction.score?.status !== 'ok') {
+    return calculateQQQHealth(fallbackSignals)
+  }
+
+  const { leadership, broadening, fragility } = prediction.score.components
+  const probUp = prediction.score.probability_up
+  const target = prediction.target || 'QQQ'
+
+  // participation breadth: share of the (non-target) universe with positive 30m momentum
+  const mom = prediction.score.momentum_30m || {}
+  const peers = Object.keys(mom).filter((s) => s !== target)
+  const participation = peers.length
+    ? peers.filter((s) => mom[s] > 0).length / peers.length
+    : 0.5
+
+  // 0–100 health: directional conviction, participation breadth, and (inverted) fragility
+  const raw = 0.45 * probUp + 0.3 * participation + 0.25 * (1 - fragility)
+  const score = Math.max(0, Math.min(100, Math.round(raw * 100)))
+
+  const regime =
+    fragility >= 0.5
+      ? 'Narrow Participation'
+      : participation >= 0.6 && broadening > 0
+        ? 'Broad Participation'
+        : leadership > 0.2
+          ? 'Top-Sector Strength'
+          : 'Mixed Participation'
+
+  return {
+    score,
+    regime,
+    breadth: `${Math.round(participation * 100)}% participation`,
+    summary: `QQQ health is ${score}/100 with ${regime.toLowerCase()}.`,
   }
 }
 
@@ -294,23 +463,94 @@ export function calculateFragilityMeter(signals: ETFSignal[]): FragilityMeter {
   }
 }
 
-export function calculateLeadLag(signals: ETFSignal[]): LeadLagSignal {
-  const smh = signals.find((item) => item.symbol === 'SMH')
-  const xlk = signals.find((item) => item.symbol === 'XLK')
-  const qqqApprox = safeAverage(signals.map((item) => item.dailyChange))
+/**
+ * Derive a LeadLagSignal from the live prediction payload.
+ *
+ * Replaces the old hardcoded-3/5-minute heuristic: the leader, lag (in
+ * minutes) and confidence are now the *measured* cross-correlation results
+ * computed by the backend lead/lag engine. Returns an "awaiting data" signal
+ * when the prediction is missing or the engine is still warming up.
+ */
+export function deriveLeadLag(prediction: PredictionPayload | null): LeadLagSignal {
+  const lagger = prediction?.target || 'QQQ'
 
-  const leader = smh && smh.momentumScore > (xlk?.momentumScore ?? 0) ? 'SMH' : 'XLK'
-  const lagger = 'QQQ'
-  const leadMinutes = leader === 'SMH' ? 3 : 5
-  const confidence = Math.abs((smh?.momentumScore ?? 0) - (xlk?.momentumScore ?? 0)) >= 2 ? 'High' : 'Medium'
+  // No payload yet, or the engine has not produced a verdict for this session.
+  if (!prediction || prediction.status !== 'ok' || !prediction.lead_lag) {
+    const barsUsed = prediction?.bars_used ?? prediction?.lead_lag?.bars_used ?? 0
+    return {
+      leader: '—',
+      lagger,
+      leadMinutes: 0,
+      confidence: 'Warming up',
+      details: [
+        `Warming up — ${barsUsed} bar${barsUsed === 1 ? '' : 's'} collected this session.`,
+        'Lead/lag roles are measured from cross-correlation once enough intraday bars accumulate.',
+      ],
+    }
+  }
+
+  const ll = prediction.lead_lag
+  const leaderInfo = ll.leader
+
+  // Engine ran but found no qualifying leader. This is the common, realistic
+  // case: liquid sector ETFs (XLK/SMH/MAGS are inside QQQ) move coincidentally
+  // at 1m resolution, so correlation peaks at lag 0 rather than ahead. Surface
+  // the strongest *tentative* lead so the card stays informative.
+  if (!leaderInfo) {
+    // Only surface a tentative lead that is actually meaningful: its peak must
+    // sit at a positive lag, the correlation must clear a noise floor, and the
+    // symbol must not already be classified diverging/weak (a corr-0.04 "lead"
+    // is noise, and flagging a diverging sector as "leading" is contradictory).
+    const TENTATIVE_CORR_FLOOR = 0.2
+    const tentative = (ll.entries || [])
+      .filter(
+        (e) =>
+          e.best_lag >= 1 &&
+          e.best_corr >= TENTATIVE_CORR_FLOOR &&
+          e.role !== 'diverging' &&
+          e.role !== 'weak',
+      )
+      .sort((a, b) => b.best_corr - a.best_corr)[0]
+
+    const details = [`No sector is decisively leading ${lagger} right now.`]
+    if (tentative) {
+      details.push(
+        `Strongest tendency: ${tentative.symbol} ~${tentative.best_lag}m ahead ` +
+          `(corr ${tentative.best_corr.toFixed(2)}, tentative — not beating the coincident move).`,
+      )
+    }
+    details.push(
+      ll.confirmers.length
+        ? `Coincident confirmers: ${ll.confirmers.join(', ')}.`
+        : 'No strong coincident confirmers detected.',
+    )
+    details.push(
+      ll.diverging.length ? `Diverging: ${ll.diverging.join(', ')}.` : 'No diverging sectors.',
+    )
+
+    return {
+      leader: tentative ? `${tentative.symbol}?` : 'None',
+      lagger,
+      leadMinutes: tentative ? tentative.best_lag : 0,
+      confidence: 'Low',
+      details,
+    }
+  }
+
+  const corr = leaderInfo.corr
+  const leadMinutes = leaderInfo.lag_minutes
+  const confidence = corr >= 0.6 ? 'High' : corr >= 0.4 ? 'Medium' : 'Low'
+
   const details = [
-    `${leader} leading QQQ by ${leadMinutes} minutes`,
-    `Correlation strength is ${confidence.toLowerCase()}.`,
-    `Relative strength on ${leader} remains above market average.`,
+    `${leaderInfo.symbol} leads ${lagger} by ${leadMinutes} minute${leadMinutes === 1 ? '' : 's'} (measured).`,
+    `Cross-correlation ${corr.toFixed(2)} · beta ${leaderInfo.beta.toFixed(2)}.`,
+    ll.confirmers.length
+      ? `Confirmers moving coincidentally: ${ll.confirmers.join(', ')}.`
+      : 'No strong coincident confirmers detected.',
   ]
 
   return {
-    leader,
+    leader: leaderInfo.symbol,
     lagger,
     leadMinutes,
     confidence,
@@ -336,4 +576,158 @@ export function calculateAIConcentration(signals: ETFSignal[]): AIConcentration 
 
 export function formatSignalValue(value: number) {
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}%`
+}
+
+export type StabilityBadge = {
+  verdict: 'tradeable' | 'unstable' | 'gathering' | 'no_leader'
+  /** semantic tone for the pill */
+  tone: 'emerald' | 'amber' | 'slate'
+  label: string
+  message: string
+  /** true when the engine produced a usable (non-warming) read */
+  ready: boolean
+}
+
+/**
+ * Derive a stability badge from the live prediction's `stability` section
+ * (Phase-2 lead/lag cross-day persistence). Pure — falls back to a
+ * "gathering" slate badge when the section is missing/warming so the
+ * lead/lag card always renders something sensible.
+ */
+export function deriveStabilityBadge(prediction: PredictionPayload | null): StabilityBadge {
+  const s = prediction?.stability
+  if (!s || (s.status !== 'ok' && s.status !== 'gathering')) {
+    return {
+      verdict: 'gathering',
+      tone: 'slate',
+      label: 'Gathering',
+      message: 'Gathering cross-session data to gauge lead stability.',
+      ready: false,
+    }
+  }
+
+  const verdict = s.verdict
+  const tone: StabilityBadge['tone'] =
+    verdict === 'tradeable' ? 'emerald' : verdict === 'unstable' ? 'amber' : 'slate'
+  const label =
+    verdict === 'tradeable'
+      ? 'Tradeable'
+      : verdict === 'unstable'
+        ? 'Unstable'
+        : verdict === 'no_leader'
+          ? 'No leader'
+          : 'Gathering'
+
+  return {
+    verdict,
+    tone,
+    label,
+    message: s.message,
+    ready: s.status === 'ok',
+  }
+}
+
+export type HitRateView = {
+  /** the section's coarse status, surfaced for warming/no-leader handling */
+  status: 'ok' | 'gathering' | 'no_leader' | 'warming_up' | 'unavailable'
+  ready: boolean
+  leader: string | null
+  /** horizon (minutes) actually displayed */
+  horizonMinutes: number
+  /** whether the displayed value came from the auto horizon or a manual pick */
+  mode: 'auto' | 'manual'
+  /** hit-rate as a 0-100 percentage for the chosen horizon */
+  hitRatePct: number
+  /** raw 0..1 hit rate for the chosen horizon */
+  hitRate: number
+  sampleSize: number
+  sessions: number
+  /** edge over the naive baseline, 0..1 (auto-horizon value from backend) */
+  edge: number
+  /** sorted minute options for the dropdown (from by_horizon keys) */
+  horizonOptions: number[]
+  message: string
+  /** ready, human one-liner for the card */
+  line: string
+}
+
+/**
+ * Derive the hit-rate view for the lead/lag card.
+ *
+ * THE HORIZON RULE: `opts.horizon` only re-selects which forward-return window
+ * to *display* from `hit_rate.by_horizon` — it NEVER touches lead/lag. Passing
+ * undefined/null means "auto" (the backend's measured-lead horizon, the default
+ * mode). Passing a number picks that horizon from by_horizon client-side; if the
+ * key is absent we fall back to the auto value.
+ */
+export function deriveHitRate(
+  prediction: PredictionPayload | null,
+  opts?: { horizon?: number | null },
+): HitRateView {
+  const hr = prediction?.hit_rate
+  const lagger = prediction?.target || 'QQQ'
+
+  if (!hr) {
+    return {
+      status: 'unavailable',
+      ready: false,
+      leader: null,
+      horizonMinutes: 0,
+      mode: 'auto',
+      hitRatePct: 0,
+      hitRate: 0,
+      sampleSize: 0,
+      sessions: 0,
+      edge: 0,
+      horizonOptions: [],
+      message: 'Hit-rate data is not available yet.',
+      line: 'Gathering data — 0 sessions.',
+    }
+  }
+
+  const byHorizon = hr.by_horizon || {}
+  const horizonOptions = Object.keys(byHorizon)
+    .map((k) => Number(k))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b)
+
+  // Auto = the backend's reported horizon/value (measured lead). Manual = a
+  // requested fixed horizon found in by_horizon.
+  const wantManual = opts?.horizon != null
+  const manualKey = wantManual ? String(opts!.horizon) : null
+  const hasManual = manualKey != null && manualKey in byHorizon
+
+  const mode: 'auto' | 'manual' = hasManual ? 'manual' : 'auto'
+  const horizonMinutes = hasManual ? Number(manualKey) : hr.horizon_minutes
+  const hitRate = hasManual ? byHorizon[manualKey!] : hr.hit_rate
+  const hitRatePct = Math.round((hitRate ?? 0) * 100)
+
+  const ready = hr.status === 'ok'
+  let line: string
+  if (!ready) {
+    line =
+      hr.status === 'no_leader'
+        ? 'No leader to measure continuation against.'
+        : `Gathering data — ${hr.sessions} session${hr.sessions === 1 ? '' : 's'}.`
+  } else {
+    line =
+      `${lagger} followed ${hr.leader ?? 'the leader'} ${hitRatePct}% over ~${horizonMinutes}m ` +
+      `(n=${hr.sample_size}, ${hr.sessions} session${hr.sessions === 1 ? '' : 's'})`
+  }
+
+  return {
+    status: (hr.status as HitRateView['status']) || 'unavailable',
+    ready,
+    leader: hr.leader,
+    horizonMinutes,
+    mode,
+    hitRatePct,
+    hitRate: hitRate ?? 0,
+    sampleSize: hr.sample_size,
+    sessions: hr.sessions,
+    edge: hr.edge,
+    horizonOptions,
+    message: hr.message,
+    line,
+  }
 }

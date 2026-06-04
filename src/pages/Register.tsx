@@ -1,6 +1,7 @@
 import { useState, useEffect, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore'
+import Logo from '../components/Logo'
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -67,15 +68,15 @@ export default function Register() {
       <div className="relative overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/40 p-8 shadow-glow">
         <div className="pointer-events-none absolute -right-16 -top-16 h-44 w-44 rounded-full bg-indigo-500/10 blur-3xl" />
         <div className="relative">
-          <span className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-lg font-bold text-slate-950">
-            ◈
+          <span className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950">
+            <Logo className="h-6 w-6" />
           </span>
           <p className="mt-5 text-[0.7rem] font-semibold uppercase tracking-[0.25em] text-cyan-300/80">
             Get started
           </p>
           <h1 className="mt-2 text-2xl font-semibold text-white">Create your account</h1>
           <p className="mt-1.5 text-sm text-slate-400">
-            Free to start — track the market regime in minutes.
+            Free to start — track the tech regime in minutes.
           </p>
 
           <form onSubmit={handleSubmit} className="mt-7 space-y-5">

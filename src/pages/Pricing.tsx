@@ -96,8 +96,8 @@ export default function Pricing() {
             Simple, honest pricing
           </h1>
           <p className="mt-4 text-base leading-7 text-slate-300">
-            Start free with the live trend-regime dashboard. Upgrade to Pro for
-            regime alerts, full sector analytics, and data export.
+            Start free with the live tech-regime dashboard (QQQ / Nasdaq-100). Upgrade
+            to Pro for regime alerts, full sector analytics, and data export.
           </p>
         </div>
       </section>
@@ -106,7 +106,7 @@ export default function Pricing() {
         <Tier
           name="Starter"
           price="Free"
-          bullets={['Live trend-regime dashboard', 'Community support', '1 watchlist']}
+          bullets={['Live tech-regime dashboard', 'Community support', '1 watchlist']}
           cta="Sign up"
           onCta={() => navigate(user ? '/dashboard' : '/register')}
         />
