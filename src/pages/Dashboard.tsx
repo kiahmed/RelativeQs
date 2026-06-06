@@ -8,6 +8,8 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  Area,
+  AreaChart,
 } from 'recharts'
 import { useAuthStore } from '../store/useAuthStore'
 import { useMarketStore } from '../store/useMarketStore'
@@ -220,16 +222,16 @@ function LabeledSection({
 
 /* tooltip copy — what each card shows and how to read it */
 const TIPS = {
-  regime:
-    'Is tech risk-on or risk-off? Compares QQQ (Nasdaq-100) to its 200-day average price. RISK-ON = price above trend (historically stronger returns), RISK-OFF = below trend (higher drawdown risk). Use it as a risk dial for how aggressive to be on tech — not as a buy/sell signal.',
   relativeStrength:
-    'Which broadening sector (XLY Consumer, XLF Financials) is trading strongest versus its own recent trend. Above 1.00x = outperforming its trend, meaning the rally is spreading beyond tech. This is different from the Lead/Lag card, which compares momentum between the tech leaders (SMH vs XLK).',
+    'The sector ETF with the strongest 30-minute momentum right now (same intraday engine as the rest of the dashboard). Green = gaining, red = fading. It is the current momentum leader by magnitude — distinct from the Lead/Lag card, which is about timing (what moves before QQQ).',
   health:
     'A 0–100 composite of the measured rotation read: directional conviction (probability up), participation breadth (share of the universe with positive momentum) and fragility. 75+ = broad, healthy participation; below 50 = narrow, fragile participation. The higher the score, the more you can trust a QQQ move. (This is about how *broad* the move is — distinct from the Lead/Lag card, which is about *timing*.)',
   fragility:
-    'Flags when QQQ strength is masking weakness underneath — e.g. consumer or industrial sectors lagging while QQQ rises. More warnings = a move that is more likely to reverse.',
+    'Intraday fragility from the composite engine — the share of the universe diverging or showing weakness while QQQ pushes (masked weakness). LOW = move is well-supported; HIGH (≥50%) = strength is masking weakness underneath and is more likely to reverse.',
   leadLagScore:
-    'Overall direction from the QQQ signal engine, combining leader momentum (XLK/SMH), broadening (XLY/XLF) and confirmation (XLI/IWM/XLE). Probability above 50% leans bullish, below 50% leans bearish.',
+    'The intraday composite read (same engine as the projection): leadership + broadening − fragility, rolled into a probability that QQQ is heading up over the short horizon. Above 55% leans bullish, below 45% bearish. This is the live intraday signal that drives the projection.',
+  aiDependency:
+    'Structural, NOT intraday. How much of QQQ\'s DAILY move is explained by the AI build-out complex — memory, optics/EUV, servers/networking, power, grid — measured as the rolling R² of QQQ daily returns on the basket, tracked over all available history. The change pill shows whether that dependency is rising or falling vs a month ago; the bars show which bottleneck QQQ is most coupled to today. Basket is config-driven (ETFs and/or bellwether stocks) and never fabricated — young funds are flagged "limited history". This is a backdrop read for analysts; it does NOT feed the intraday score or projection.',
   leadLagDetect:
     'Which sector ETF is measured to move BEFORE QQQ this session, and by how many minutes. The leader, lag and correlation are computed from intraday cross-correlation across the whole ETF universe — not hardcoded. While the engine is gathering enough 1-minute bars it shows "Warming up".',
   projection:
@@ -317,11 +319,8 @@ export default function Dashboard() {
   const user = useAuthStore((state) => state.user)
   const token = useAuthStore((state) => state.token)
   const {
-    signals,
     rollingCorrelation,
     qqqHealth,
-    qqqScore,
-    fragilityMeter,
     leadLag,
     prediction,
     loading,
@@ -336,11 +335,6 @@ export default function Dashboard() {
   // hit-rate horizon UI (component-local, not store). null = Auto (default).
   const [hitRateAuto, setHitRateAuto] = useState(true)
   const [hitRateHorizon, setHitRateHorizon] = useState<number | null>(null)
-
-  const highestStrength = signals.reduce(
-    (best, item) => (item.relativeStrength > best.relativeStrength ? item : best),
-    signals[0],
-  )
 
   useEffect(() => {
     // background poll is silent (no loading flag) so the UI doesn't flicker/reflow
@@ -382,45 +376,58 @@ export default function Dashboard() {
   }
 
   const healthTone = scoreTone(qqqHealth.score)
-  const fragTone = fragilityTone(fragilityMeter.level)
-  const dirValue = qqqScore.direction === 'bullish' ? 1 : qqqScore.direction === 'bearish' ? -1 : 0
-  const dirTone = trendTone(dirValue)
-  const probabilityPct = Math.round((qqqScore.probability + 1) * 50)
 
-  // --- trend regime (200-day SMA engine) — the backtested headline signal ---
-  const regime = qqqScore.regime ?? 'unknown'
-  const isRiskOn = regime === 'risk-on'
-  const isRiskOff = regime === 'risk-off'
-  const trendGap = qqqScore.trend_gap ?? qqqScore.raw_score ?? 0
-  const regimeStyle = isRiskOn
-    ? {
-        label: 'RISK-ON',
-        accent: 'text-emerald-400',
-        dot: 'bg-emerald-400',
-        grad: 'from-emerald-950/50 via-slate-900 to-slate-900',
-        border: 'border-emerald-800/50',
-        chip: 'bg-emerald-500/10 text-emerald-300',
-        icon: '▲',
-      }
-    : isRiskOff
-      ? {
-          label: 'RISK-OFF',
-          accent: 'text-rose-400',
-          dot: 'bg-rose-400',
-          grad: 'from-rose-950/50 via-slate-900 to-slate-900',
-          border: 'border-rose-800/50',
-          chip: 'bg-rose-500/10 text-rose-300',
-          icon: '▼',
-        }
-      : {
-          label: 'REGIME UNKNOWN',
-          accent: 'text-slate-300',
-          dot: 'bg-slate-500',
-          grad: 'from-slate-900 via-slate-900 to-slate-900',
-          border: 'border-slate-800',
-          chip: 'bg-slate-500/10 text-slate-300',
-          icon: '■',
-        }
+  // Intraday composite signal — the SAME engine as projection / health / lead-lag.
+  // Every analytic card on the dashboard derives from this one intraday prediction
+  // payload; there is no parallel long-term/daily logic in the UI.
+  const composite = prediction?.score ?? null
+  const compositeReady = prediction?.status === 'ok' && composite?.status === 'ok'
+  const compositeProbPct = Math.round((composite?.probability_up ?? 0.5) * 100)
+  const compositeScoreVal = composite?.score ?? 0
+  const compositeDir = !compositeReady
+    ? 'warming up'
+    : compositeProbPct >= 55
+      ? 'bullish'
+      : compositeProbPct <= 45
+        ? 'bearish'
+        : 'neutral'
+  const compositeTone = trendTone(
+    compositeDir === 'bullish' ? 1 : compositeDir === 'bearish' ? -1 : 0,
+  )
+
+  // Intraday fragility — drives the Fragility-meter KPI (was placeholder before).
+  const fragVal = composite?.components.fragility ?? 0
+  const fragLevel = !compositeReady
+    ? 'Unknown'
+    : fragVal >= 0.5
+      ? 'High'
+      : fragVal >= 0.25
+        ? 'Elevated'
+        : 'Low'
+  const fragTone = fragilityTone(fragLevel)
+  const fragWarning =
+    prediction?.confirmation?.message ||
+    (prediction?.lead_lag?.diverging?.length
+      ? `Diverging: ${prediction.lead_lag.diverging.join(', ')}.`
+      : 'No structural warnings detected.')
+
+  // --- AI-capex dependency (structural / daily — NOT intraday) ---
+  const aiDep = prediction?.ai_dependency ?? null
+  const aiDepReady = aiDep?.status === 'ok'
+  const aiDepPct = Math.round((aiDep?.dependency_now ?? 0) * 100)
+  const aiDepChangePts = Math.round((aiDep?.change ?? 0) * 100)
+  const aiDepTrend = (aiDep?.dependency_trend ?? []).map((p) => ({
+    date: p.date,
+    value: Math.round(p.value * 100),
+  }))
+  const aiThemeBars = (aiDep?.themes ?? [])
+    .filter((t) => t.corr_now != null)
+    .map((t) => ({
+      name: t.label,
+      corr: Math.round((t.corr_now ?? 0) * 100),
+      change: t.change,
+      limited: t.limited_history,
+    }))
 
   // --- intraday QQQ projection (measured lead/lag + composite score) ---
   const proj = prediction?.projection ?? null
@@ -439,6 +446,7 @@ export default function Dashboard() {
   const dirArrow = projDir === 'up' ? '▲' : projDir === 'down' ? '▼' : '■'
   const dirText =
     projDir === 'up' ? 'text-emerald-400' : projDir === 'down' ? 'text-rose-400' : 'text-slate-300'
+  const projDirTone = trendTone(projDir === 'up' ? 1 : projDir === 'down' ? -1 : 0)
   const projConfidencePct = Math.round((proj?.confidence ?? 0) * 100)
   const probUpPct = Math.round((projScore?.probability_up ?? 0.5) * 100)
   const barsCollected = prediction?.bars_used ?? 0
@@ -466,6 +474,7 @@ export default function Dashboard() {
     .sort((a, b) => b.mom - a.mom)
     .slice(0, 8)
   const universeMaxAbs = universeTiles.reduce((mx, t) => Math.max(mx, Math.abs(t.mom)), 0)
+  const momLeader = universeTiles[0] ?? null  // strongest sector by 30m momentum (KPI)
 
   const breadth = prediction?.breadth ?? null
   const breadthReady = breadth?.status === 'ok'
@@ -531,29 +540,9 @@ export default function Dashboard() {
               QQQ &amp; Sector Leadership Analytics
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-              Relative strength, divergence, rolling correlations, lead/lag signals and
-              fragility — all in one glance.
+              What's driving QQQ under the hood and where it's headed intraday — leadership,
+              breadth, fragility and a short-horizon projection, all in one glance.
             </p>
-            {/* compact trend-regime chip (demoted from the old banner) */}
-            <div className="mt-3 inline-flex items-center gap-2">
-              <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${regimeStyle.chip}`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${regimeStyle.dot} ${
-                    isRiskOn || isRiskOff ? 'animate-pulse' : ''
-                  }`}
-                />
-                Regime: {regimeStyle.label}
-                {(isRiskOn || isRiskOff) && (
-                  <span className="font-normal text-slate-400">
-                    · {Math.abs(trendGap * 100).toFixed(1)}% {trendGap >= 0 ? 'above' : 'below'}{' '}
-                    {qqqScore.trend_window ?? 200}-day trend
-                  </span>
-                )}
-              </span>
-              <InfoTip text={TIPS.regime} align="left" />
-            </div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -596,6 +585,15 @@ export default function Dashboard() {
                 🔮
               </span>
               <LabeledSection label="QQQ projection" tip={TIPS.projection} align="left" />
+              {compositeReady && (
+                <span
+                  className={`ml-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${compositeTone.bg} ${compositeTone.text}`}
+                  title="Intraday composite read — same engine that sets the direction below"
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${compositeTone.bar}`} />
+                  {compositeDir} · {compositeProbPct}%
+                </span>
+              )}
             </div>
 
             {projReady ? (
@@ -650,7 +648,7 @@ export default function Dashboard() {
               <div className="min-w-[88px]">
                 <p className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">Prob. up</p>
                 <p className="mt-1 text-lg font-semibold text-white">{probUpPct}%</p>
-                <Meter value={probUpPct} max={100} color={dirTone.bar} />
+                <Meter value={probUpPct} max={100} color={projDirTone.bar} />
               </div>
               <div className="min-w-[88px]">
                 <p className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">
@@ -670,23 +668,23 @@ export default function Dashboard() {
       {/* ---------------------------------------------------------- */}
       {/* KPI cards                                                   */}
       {/* ---------------------------------------------------------- */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {/* leadership */}
         <Card className="animate-fade-up p-5 transition hover:-translate-y-0.5 hover:border-slate-700">
           <div className="flex items-start justify-between">
-            <LabeledSection label="Top relative strength" tip={TIPS.relativeStrength} align="left" />
+            <LabeledSection label="Strongest sector · 30m" tip={TIPS.relativeStrength} align="left" />
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/10 text-cyan-300">
               ⚡
             </span>
           </div>
           <p className="mt-4 text-3xl font-semibold text-white">
-            {highestStrength?.symbol ?? '—'}
+            {momLeader?.symbol ?? '—'}
           </p>
-          <p className="mt-1 text-sm text-slate-400">{highestStrength?.name}</p>
+          <p className="mt-1 text-sm text-slate-400">{momLeader?.name ?? 'Warming up'}</p>
           <div className="mt-4 flex items-center justify-between text-sm">
-            <span className="text-slate-400">RS multiple</span>
-            <span className="font-semibold text-cyan-300">
-              {highestStrength?.relativeStrength.toFixed(2)}x
+            <span className="text-slate-400">30-min momentum</span>
+            <span className={`font-semibold ${momLeader && momLeader.mom < 0 ? 'text-rose-300' : 'text-cyan-300'}`}>
+              {momLeader ? `${momLeader.mom >= 0 ? '+' : ''}${(momLeader.mom * 100).toFixed(2)}%` : '—'}
             </span>
           </div>
         </Card>
@@ -731,42 +729,134 @@ export default function Dashboard() {
           </div>
           <div className="mt-4 flex items-center gap-2">
             <span className={`h-2.5 w-2.5 rounded-full ${fragTone.dot}`} />
-            <p className={`text-2xl font-semibold capitalize ${fragTone.text}`}>
-              {fragilityMeter.level}
-            </p>
+            <p className={`text-2xl font-semibold capitalize ${fragTone.text}`}>{fragLevel}</p>
           </div>
           <p className="mt-3 text-xs text-slate-400">
-            {fragilityMeter.warnings.length} active warning
-            {fragilityMeter.warnings.length === 1 ? '' : 's'}
+            {compositeReady ? `${Math.round(fragVal * 100)}% internal fragility` : 'Warming up'}
           </p>
-          <p className="mt-1 text-xs leading-5 text-slate-400 line-clamp-2">
-            {fragilityMeter.warnings[0] ?? 'No structural warnings detected.'}
-          </p>
-        </Card>
-
-        {/* lead-lag */}
-        <Card className="animate-fade-up p-5 transition hover:-translate-y-0.5 hover:border-slate-700">
-          <div className="flex items-start justify-between">
-            <LabeledSection label="QQQ lead-lag score" tip={TIPS.leadLagScore} align="right" />
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-500/10 text-indigo-300">
-              🎯
-            </span>
-          </div>
-          <p className={`mt-4 text-3xl font-semibold capitalize ${dirTone.text}`}>
-            {qqqScore.direction}
-          </p>
-          <div className="mt-4 space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-400">Probability</span>
-              <span className="font-semibold text-slate-200">{probabilityPct}%</span>
-            </div>
-            <Meter value={probabilityPct} max={100} color={dirTone.bar} />
-            <p className="text-[0.7rem] text-slate-400">
-              Score {qqqScore.raw_score.toFixed(2)} · via {qqqScore.provider}
-            </p>
-          </div>
+          <p className="mt-1 text-xs leading-5 text-slate-400 line-clamp-2">{fragWarning}</p>
         </Card>
       </div>
+
+      {/* ---------------------------------------------------------- */}
+      {/* AI-capex dependency — flagship structural read (daily)      */}
+      {/* ---------------------------------------------------------- */}
+      <Card className="relative overflow-hidden p-6 sm:p-7">
+        <div className="pointer-events-none absolute -right-20 -top-20 h-52 w-52 rounded-full bg-fuchsia-500/10 blur-3xl" />
+        <div className="relative">
+          <div className="flex items-center gap-2">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-fuchsia-500/10 text-lg text-fuchsia-300">
+              🧠
+            </span>
+            <LabeledSection label="AI build-out dependency" tip={TIPS.aiDependency} align="left" />
+            <span className="ml-1 rounded-full bg-slate-800/80 px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Structural · daily
+            </span>
+          </div>
+
+          {aiDepReady ? (
+            <div className="mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+              {/* left: headline number + trend */}
+              <div>
+                <div className="flex items-end gap-3">
+                  <p className="text-5xl font-bold tracking-tight text-white">{aiDepPct}%</p>
+                  <span
+                    className={`mb-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      aiDepChangePts > 0
+                        ? 'bg-emerald-500/10 text-emerald-300'
+                        : aiDepChangePts < 0
+                          ? 'bg-rose-500/10 text-rose-300'
+                          : 'bg-slate-700/40 text-slate-300'
+                    }`}
+                  >
+                    {aiDepChangePts >= 0 ? '▲' : '▼'} {Math.abs(aiDepChangePts)} pts
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-400">
+                  of QQQ&apos;s daily move is explained by the AI build-out complex · vs{' '}
+                  {aiDep!.change_lookback_days}d ago
+                </p>
+                <div className="mt-4 h-28">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={aiDepTrend} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="aiDepFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#e879f9" stopOpacity={0.5} />
+                          <stop offset="100%" stopColor="#e879f9" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <YAxis domain={[0, 100]} hide />
+                      <XAxis dataKey="date" hide />
+                      <Tooltip
+                        contentStyle={{
+                          background: '#0f172a',
+                          border: '1px solid #334155',
+                          borderRadius: 12,
+                          fontSize: 12,
+                        }}
+                        labelStyle={{ color: '#94a3b8' }}
+                        formatter={(v: number) => [`${v}%`, 'dependency']}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="value"
+                        stroke="#e879f9"
+                        strokeWidth={2}
+                        fill="url(#aiDepFill)"
+                        isAnimationActive={false}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">{aiDep!.headline}</p>
+              </div>
+
+              {/* right: per-bottleneck coupling today */}
+              <div>
+                <p className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">
+                  Coupling to QQQ by bottleneck · 30-day
+                </p>
+                <div className="mt-3 space-y-2.5">
+                  {aiThemeBars.map((t) => (
+                    <div key={t.name}>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-300">
+                          {t.name}
+                          {t.limited && (
+                            <span className="ml-1.5 text-[0.6rem] text-amber-300/80">
+                              limited history
+                            </span>
+                          )}
+                        </span>
+                        <span className="font-semibold text-slate-200">
+                          {t.corr}%
+                          <span
+                            className={`ml-1.5 ${
+                              t.change > 0.02
+                                ? 'text-emerald-300'
+                                : t.change < -0.02
+                                  ? 'text-rose-300'
+                                  : 'text-slate-500'
+                            }`}
+                          >
+                            {t.change >= 0 ? '▲' : '▼'}
+                          </span>
+                        </span>
+                      </div>
+                      <Meter value={Math.abs(t.corr)} max={100} color="bg-fuchsia-400" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-slate-400">
+              Warming up — gathering daily history to measure how dependent QQQ has become on the
+              AI build-out complex.
+            </p>
+          )}
+        </div>
+      </Card>
 
       {/* ---------------------------------------------------------- */}
       {/* charts + sidebar — Pro                                      */}

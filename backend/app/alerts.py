@@ -1,14 +1,19 @@
 """
-Regime-change alerts.
+Breadth-shift alerts.
 
-The market poll loop calls `check_regime_and_alert()` each cycle. When the QQQ
-trend regime flips (risk-on <-> risk-off), every Pro user who has alerts
-enabled is emailed via Resend.
+The market poll loop calls `check_breadth_and_alert()` each cycle with the live
+Nasdaq-100 breadth payload. When equal-weight breadth makes a MAJOR shift —
+the participation state flips between broad / mixed / narrow — every Pro user
+who has alerts enabled is emailed via Resend.
 
-The "last regime" is kept in process memory: the first observation after a
+This aligns the alert with the intraday tech thesis: it fires on real changes in
+how many Nasdaq-100 names are actually participating (true breadth), not on a
+lagging long-term 200-day-SMA cross.
+
+The "last state" is kept in process memory: the first observation after a
 restart seeds it silently (no alert), so a restart never produces a spurious
-alert. A flip that happens exactly across a restart would be missed — an
-acceptable trade-off, since regime flips are rare (a 200-day-SMA cross).
+alert. A flip across a restart would be missed — acceptable, since these shifts
+are infrequent.
 """
 
 import logging
@@ -23,8 +28,15 @@ logger = logging.getLogger(__name__)
 
 _RESEND_URL = "https://api.resend.com/emails"
 
-# last regime observed by the poll loop (process-local)
-_last_regime: Optional[str] = None
+# last breadth state observed by the poll loop (process-local)
+_last_breadth_state: Optional[str] = None
+
+# human copy + color per breadth state
+_STATE_META = {
+    "broad": ("Broad participation", "#10b981"),
+    "mixed": ("Mixed participation", "#f59e0b"),
+    "narrow": ("Narrow participation", "#f43f5e"),
+}
 
 
 async def send_email(to_email: str, subject: str, html: str) -> bool:
@@ -58,17 +70,22 @@ async def send_email(to_email: str, subject: str, html: str) -> bool:
         return False
 
 
-def _email_html(previous: str, current: str, trend_gap: float) -> str:
-    color = "#10b981" if current == "risk-on" else "#f43f5e"
-    pct = abs(trend_gap) * 100
-    side = "above" if trend_gap >= 0 else "below"
+def _email_html(previous: str, current: str, breadth: dict) -> str:
+    cur_label, color = _STATE_META.get(current, (current, "#22d3ee"))
+    prev_label = _STATE_META.get(previous, (previous,))[0]
+    eq = float(breadth.get("equal_weight_pct", 0.0) or 0.0) * 100
+    cap = float(breadth.get("cap_weight_pct", 0.0) or 0.0) * 100
+    adv = breadth.get("advancers")
+    measured = breadth.get("measured")
+    count_txt = (f"{adv}/{measured} names advancing — "
+                 if adv is not None and measured else "")
     return (
         '<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto">'
-        f'<h2 style="color:{color};margin-bottom:4px">Market regime: {current.upper()}</h2>'
-        f'<p style="color:#475569">QQQ\'s trend regime just changed from '
-        f"<b>{previous}</b> to <b>{current}</b>.</p>"
-        f'<p style="color:#475569">QQQ is now {pct:.1f}% {side} its 200-day '
-        "trend line.</p>"
+        f'<h2 style="color:{color};margin-bottom:4px">QQQ breadth: {cur_label}</h2>'
+        f'<p style="color:#475569">Nasdaq-100 participation just shifted from '
+        f"<b>{prev_label}</b> to <b>{cur_label}</b>.</p>"
+        f'<p style="color:#475569">{count_txt}{eq:.0f}% equal-weight, '
+        f"{cap:.0f}% cap-weight.</p>"
         '<p style="font-size:13px;color:#94a3b8">This is a market-internals '
         "signal, not investment advice.</p>"
         "</div>"
@@ -81,47 +98,52 @@ def test_email_html() -> str:
         '<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto">'
         '<h2 style="color:#22d3ee;margin-bottom:4px">Test alert &#10003;</h2>'
         '<p style="color:#475569">This is a test email from RelativeQs. '
-        "Your regime-change alerts are wired up correctly — you'll get an email "
-        "like this whenever QQQ flips between risk-on and risk-off.</p>"
+        "Your breadth-shift alerts are wired up correctly — you'll get an email "
+        "like this whenever Nasdaq-100 participation flips between broad, mixed "
+        "and narrow.</p>"
         '<p style="font-size:13px;color:#94a3b8">No action needed. This is a '
         "market-internals signal, not investment advice.</p>"
         "</div>"
     )
 
 
-async def _dispatch(previous: str, current: str, qqq_score: dict) -> None:
-    """Email every Pro subscriber about a regime flip."""
+async def _dispatch(previous: str, current: str, breadth: dict) -> None:
+    """Email every Pro subscriber about a breadth-state shift."""
     recipients = await supabase_admin.list_alert_recipients()
     if not recipients:
         logger.info(
-            "[ALERTS] regime flip %s -> %s, but no subscribers", previous, current
+            "[ALERTS] breadth shift %s -> %s, but no subscribers", previous, current
         )
         return
-    subject = f"QQQ regime changed: {current.upper()}"
-    html = _email_html(previous, current, float(qqq_score.get("trend_gap", 0.0) or 0.0))
+    cur_label = _STATE_META.get(current, (current,))[0]
+    subject = f"QQQ breadth shift: {cur_label}"
+    html = _email_html(previous, current, breadth)
     sent = 0
     for r in recipients:
         email = r.get("email")
         if email and await send_email(email, subject, html):
             sent += 1
     logger.info(
-        "[ALERTS] regime flip %s -> %s: emailed %d/%d subscribers",
+        "[ALERTS] breadth shift %s -> %s: emailed %d/%d subscribers",
         previous, current, sent, len(recipients),
     )
 
 
-async def check_regime_and_alert(qqq_score: dict) -> None:
-    """Called each poll cycle — detect a regime flip and notify subscribers."""
-    global _last_regime
-    regime = qqq_score.get("regime")
-    if regime not in ("risk-on", "risk-off"):
-        return  # ignore 'unknown' / missing
-    if _last_regime is None:
-        _last_regime = regime
-        logger.info("[ALERTS] baseline regime set to %s", regime)
+async def check_breadth_and_alert(breadth: dict) -> None:
+    """Called each poll cycle — detect a MAJOR equal-weight breadth shift
+    (broad/mixed/narrow participation flip) and notify subscribers."""
+    global _last_breadth_state
+    if not isinstance(breadth, dict) or breadth.get("status") != "ok":
+        return  # warming up / no data
+    state = breadth.get("breadth_state")
+    if state not in _STATE_META:
+        return  # 'unknown' / missing
+    if _last_breadth_state is None:
+        _last_breadth_state = state
+        logger.info("[ALERTS] baseline breadth state set to %s", state)
         return
-    if regime == _last_regime:
+    if state == _last_breadth_state:
         return
-    previous, _last_regime = _last_regime, regime
-    logger.info("[ALERTS] regime flip detected: %s -> %s", previous, regime)
-    await _dispatch(previous, regime, qqq_score)
+    previous, _last_breadth_state = _last_breadth_state, state
+    logger.info("[ALERTS] breadth shift detected: %s -> %s", previous, state)
+    await _dispatch(previous, state, breadth)

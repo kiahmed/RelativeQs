@@ -67,6 +67,18 @@ async def prediction():
     return pred
 
 
+@router.get("/ai-dependency")
+async def ai_dependency():
+    """Public AI-capex dependency index — structural/daily metric for the
+    landing-page highlight. Served from the cached prediction when warm,
+    otherwise computed on demand (its own in-process daily cache keeps it cheap)."""
+    logger.info("[API] GET /ai-dependency")
+    cached = await cache.get(PREDICTION_KEY)
+    if cached and cached.get("ai_dependency"):
+        return cached["ai_dependency"]
+    return await market.fetch_ai_dependency()
+
+
 # --------------------------------------------------------------------------
 # Authentication
 # --------------------------------------------------------------------------

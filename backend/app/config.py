@@ -32,6 +32,45 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _ai_basket() -> List[dict]:
+    """The AI-bottleneck basket, grouped by theme. Symbol-agnostic members:
+    pure-play ETFs, dominant bellwether stocks (which also lengthen history),
+    or standalone names with no ETF home yet. Override wholesale via AI_BASKET
+    (JSON). Verified live on Yahoo as of build; young ETFs simply start their
+    trend later — never faked.
+    """
+    raw = os.getenv("AI_BASKET")
+    if raw:
+        try:
+            import json
+            parsed = json.loads(raw)
+            if isinstance(parsed, list) and parsed:
+                return parsed
+            print("[CONFIG] AI_BASKET must be a non-empty JSON list; using default")
+        except Exception as e:
+            print(f"[CONFIG] invalid AI_BASKET JSON ({e}); using default")
+    return [
+        {"key": "memory", "label": "Memory", "members": [
+            {"symbol": "DRAM", "label": "Memory ETF"},
+            {"symbol": "MU", "label": "Micron"},
+        ]},
+        {"key": "optics", "label": "Optics / EUV", "members": [
+            {"symbol": "EUV", "label": "EUV/optics ETF"},
+            {"symbol": "ASML", "label": "ASML"},
+        ]},
+        {"key": "networking", "label": "Servers / Networking", "members": [
+            {"symbol": "TCAI", "label": "AI infra ETF"},
+        ]},
+        {"key": "power", "label": "Power", "members": [
+            {"symbol": "AIPO", "label": "AI power ETF"},
+            {"symbol": "ZAP", "label": "Electrification ETF"},
+        ]},
+        {"key": "grid", "label": "Grid build-out", "members": [
+            {"symbol": "GRID", "label": "Smart-grid ETF"},
+        ]},
+    ]
+
+
 class Settings:
     # Data provider selection: mock, yahoo, alphavantage, twelvedata, polygon, alpaca
     DATA_PROVIDER: str = os.getenv("DATA_PROVIDER", "mock")
@@ -170,6 +209,33 @@ class Settings:
     # equal-weight (true breadth) and cap-weight (is the move real for the index).
     BREADTH_ENABLED: bool = os.getenv("BREADTH_ENABLED", "true").lower() in ("1", "true", "yes")
     BREADTH_TARGET: str = os.getenv("BREADTH_TARGET", "QQQ").upper()
+
+    # --- AI-capex dependency index (structural / context — NOT intraday) ------
+    # How much of QQQ's daily behaviour is explained by the "AI bottleneck"
+    # complex (memory, optics/EUV, networking, power, grid), and how that
+    # dependency has trended over all available history. Computed on DAILY bars,
+    # walled off from the intraday thesis. Members are symbol-agnostic: each
+    # theme can hold pure-play ETFs, dominant bellwether stocks, and/or any
+    # standalone name with no ETF home yet. Fully config-driven so the basket can
+    # evolve as new sub-sector funds/companies start moving tech.
+    #
+    # Override via AI_BASKET env (JSON): a list of
+    #   {"key","label","members":[{"symbol","label"?}, ...]}
+    AI_DEPENDENCY_ENABLED: bool = os.getenv(
+        "AI_DEPENDENCY_ENABLED", "true").lower() in ("1", "true", "yes")
+    AI_DEPENDENCY_TARGET: str = os.getenv("AI_DEPENDENCY_TARGET", "QQQ").upper()
+    # rolling window (trading days) for the dependency R² / correlation
+    AI_DEPENDENCY_WINDOW: int = _env_int("AI_DEPENDENCY_WINDOW", 21)
+    # min daily returns inside a window before its metric is emitted (else gap)
+    AI_DEPENDENCY_MIN_OBS: int = _env_int("AI_DEPENDENCY_MIN_OBS", 10)
+    # how far back (trading days) the "rising/falling vs N days ago" delta looks
+    AI_DEPENDENCY_CHANGE_LOOKBACK: int = _env_int("AI_DEPENDENCY_CHANGE_LOOKBACK", 21)
+    # daily-history span to pull for the trend
+    AI_DEPENDENCY_PERIOD: str = os.getenv("AI_DEPENDENCY_PERIOD", "2y")
+    # recompute cadence (seconds) — daily metric, no need to refetch every poll
+    AI_DEPENDENCY_REFRESH_SECONDS: int = _env_int("AI_DEPENDENCY_REFRESH_SECONDS", 3600)
+
+    AI_DEPENDENCY_BASKET: List[dict] = _ai_basket()
 
 
 settings = Settings()

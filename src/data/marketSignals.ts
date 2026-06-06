@@ -180,6 +180,36 @@ export type PredictionPayload = {
     divergence: number
     message: string
   }
+  ai_dependency?: AIDependency
+}
+
+/** AI-capex dependency index — structural/daily, walled off from intraday. */
+export type AIDependencyMember = {
+  symbol: string
+  label: string
+  bars: number
+  included: boolean
+}
+export type AIDependencyTheme = {
+  key: string
+  label: string
+  corr_now: number | null
+  beta_now: number | null
+  change: number
+  limited_history: boolean
+  members: AIDependencyMember[]
+}
+export type AIDependency = {
+  status: 'ok' | 'warming_up' | 'no_data'
+  target: string
+  asof: string | null
+  dependency_now: number
+  dependency_trend: { date: string; value: number }[]
+  change: number
+  change_lookback_days: number
+  window_days: number
+  themes: AIDependencyTheme[]
+  headline: string
 }
 
 export type AIConcentration = {

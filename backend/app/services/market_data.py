@@ -22,6 +22,7 @@ from app.core.correlation_regime import CorrelationRegimeEngine
 from app.core.stability import StabilityEngine
 from app.core.hit_rate import HitRateEngine
 from app.core.breadth import BreadthEngine
+from app.core.ai_dependency import AIDependencyEngine
 from app.services.holdings import HoldingsProvider
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,11 @@ class MarketDataService:
         # (period, interval) of the remembered frame — the throttle only reuses
         # it for an identical request so a 7d backfill never gets served a 1d frame.
         self._last_yahoo_params: tuple = (None, None)
+        # AI-capex dependency is a slow DAILY metric — cache it in-process and
+        # only refetch daily bars every AI_DEPENDENCY_REFRESH_SECONDS so the
+        # ~12s intraday poll never re-pulls 2y of daily history.
+        self._ai_dep_cache: Optional[Dict[str, Any]] = None
+        self._ai_dep_fetched: float = 0.0
 
     def _resolve_provider(self) -> str:
         provider = (self.mode or settings.DATA_PROVIDER or os.getenv("DATA_PROVIDER", "mock")).lower()
@@ -555,6 +561,37 @@ class MarketDataService:
 
         return engine.compute(opens, lasts, weights)
 
+    async def fetch_ai_dependency(self, force: bool = False) -> Dict[str, Any]:
+        """AI-capex dependency index (structural, daily). Cached in-process and
+        only recomputed every AI_DEPENDENCY_REFRESH_SECONDS — it is a slow daily
+        metric and must never be tied to the intraday poll cadence or thesis."""
+        engine = AIDependencyEngine()
+        if not getattr(settings, "AI_DEPENDENCY_ENABLED", True):
+            return engine._empty("no_data")
+
+        now = time.monotonic()
+        if (not force and self._ai_dep_cache is not None
+                and now - self._ai_dep_fetched < settings.AI_DEPENDENCY_REFRESH_SECONDS):
+            return self._ai_dep_cache
+
+        symbols = engine.all_symbols()
+        period = getattr(settings, "AI_DEPENDENCY_PERIOD", "2y")
+        try:
+            closes = await asyncio.to_thread(
+                self._download_intraday_history, symbols, period, "1d"
+            )
+        except Exception:
+            logger.exception("[AIDEP] daily fetch failed")
+            return self._ai_dep_cache or engine._empty("warming_up")
+
+        if closes is None or getattr(closes, "empty", True):
+            return self._ai_dep_cache or engine._empty("warming_up")
+
+        result = engine.compute(closes)
+        self._ai_dep_cache = result
+        self._ai_dep_fetched = now
+        return result
+
     async def fetch_prediction(self, history_store=None) -> Dict[str, Any]:
         """Compute the intraday QQQ prediction from accumulated session bars.
 
@@ -638,6 +675,13 @@ class MarketDataService:
             logger.exception("[PREDICT] breadth failed; using no_data")
             breadth = BreadthEngine()._empty("no_data")
 
+        # AI-capex dependency — structural/daily, cached in-process (cheap here).
+        try:
+            ai_dependency = await self.fetch_ai_dependency()
+        except Exception:
+            logger.exception("[PREDICT] ai_dependency failed; using warming_up")
+            ai_dependency = AIDependencyEngine()._empty("warming_up")
+
         prediction = {
             "timestamp": int(time.time()),
             "status": lead_lag["status"],
@@ -653,6 +697,7 @@ class MarketDataService:
             "stability": stability,
             "hit_rate": hit_rate,
             "breadth": breadth,
+            "ai_dependency": ai_dependency,
         }
         logger.info(
             "[PREDICT] status=%s bars=%d verdict=%s direction=%s",

@@ -132,11 +132,11 @@ async def _poll_and_broadcast():
                 len(ws_manager.active),
             )
 
-            # email Pro subscribers if the QQQ trend regime just flipped
+            # email Pro subscribers on a major Nasdaq-100 breadth-state shift
             try:
-                await alerts.check_regime_and_alert(qqq_score)
+                await alerts.check_breadth_and_alert(prediction.get("breadth", {}))
             except Exception:
-                logger.exception("[ALERTS] regime check failed")
+                logger.exception("[ALERTS] breadth check failed")
         except asyncio.CancelledError:
             logger.info("[POLL] background loop cancelled — stopping")
             raise
