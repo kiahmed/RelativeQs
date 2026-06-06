@@ -199,6 +199,14 @@ export type AIDependencyTheme = {
   limited_history: boolean
   members: AIDependencyMember[]
 }
+/** Bottleneck coupling re-measured over a lookback window (UI dropdown). */
+export type AIDependencyWindow = {
+  key: string
+  label: string
+  days: number
+  reliable: boolean
+  themes: { key: string; label: string; corr: number | null; change: number; limited: boolean }[]
+}
 export type AIDependency = {
   status: 'ok' | 'warming_up' | 'no_data'
   target: string
@@ -209,6 +217,7 @@ export type AIDependency = {
   change_lookback_days: number
   window_days: number
   themes: AIDependencyTheme[]
+  windows?: AIDependencyWindow[]
   headline: string
 }
 

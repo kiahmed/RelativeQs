@@ -158,3 +158,52 @@ def test_headline_mentions_percent():
     r = _engine().compute(df)
     assert "%" in r["headline"]
     assert "QQQ" in r["headline"]
+
+
+# --------------------------------------------------------------------------- #
+# per-window bottleneck coupling (UI dropdown)                                 #
+# --------------------------------------------------------------------------- #
+def test_windows_present_and_clamped_to_history():
+    df = _coupled_session(n=80)  # ~80 trading days
+    r = _engine().compute(df)
+    keys = [w["key"] for w in r["windows"]]
+    assert "1M" in keys and "all" in keys
+    # 6M (126) and 1Y (252) exceed 80 days of history → dropped
+    assert "6M" not in keys and "1Y" not in keys
+    for w in r["windows"]:
+        assert "themes" in w and isinstance(w["themes"], list)
+        assert w["days"] >= 1
+
+
+def test_short_window_flagged_reliable_false_when_below_min_obs():
+    df = _coupled_session(n=200)
+    eng = _engine(min_obs=15)
+    r = eng.compute(df)
+    twoweek = next((w for w in r["windows"] if w["key"] == "2W"), None)
+    assert twoweek is not None
+    assert twoweek["reliable"] is False  # 10 days < min_obs 15
+
+
+def test_window_reranks_when_recent_theme_rotation():
+    """Grid leads over the long run, but Memory dominates the last 2 weeks —
+    the short window must rank Memory above Grid while the long one keeps Grid."""
+    rng = np.random.default_rng(11)
+    n = 160
+    qqq = rng.normal(0.0, 0.012, n)
+    # Grid tracks QQQ strongly over the whole sample
+    grid = 0.9 * qqq + rng.normal(0.0, 0.004, n)
+    # Memory is decoupled early, then locks onto QQQ for the final 12 days
+    mem = rng.normal(0.0, 0.012, n)
+    mem[-12:] = 0.97 * qqq[-12:] + rng.normal(0.0, 0.002, 12)
+    df = _prices_from_returns({"QQQ": qqq, "GRID": grid, "DRAM": mem}, n)
+
+    basket = [
+        {"key": "memory", "label": "Memory", "members": [{"symbol": "DRAM", "label": "Mem"}]},
+        {"key": "grid", "label": "Grid", "members": [{"symbol": "GRID", "label": "Grid"}]},
+    ]
+    r = AIDependencyEngine(target="QQQ", basket=basket, window=21,
+                           min_obs=10, change_lookback=21).compute(df)
+    short = next(w for w in r["windows"] if w["key"] == "2W")
+    long = next(w for w in r["windows"] if w["key"] == "all")
+    assert short["themes"][0]["key"] == "memory"  # recent rotation wins short window
+    assert long["themes"][0]["key"] == "grid"     # structural leader wins long window

@@ -10,6 +10,7 @@ import {
   YAxis,
   Area,
   AreaChart,
+  ReferenceDot,
 } from 'recharts'
 import { useAuthStore } from '../store/useAuthStore'
 import { useMarketStore } from '../store/useMarketStore'
@@ -95,7 +96,7 @@ function Card({ children, className = '' }: { children: ReactNode; className?: s
 /** small colour-key legend pinned to the bottom of a card */
 function CardLegend({ items, note }: { items: { label: string; cls: string }[]; note?: string }) {
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-800/80 pt-3 text-[0.7rem] text-slate-400">
+    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-800/80 pt-2.5 text-[0.7rem] text-slate-400">
       {items.map((it) => (
         <span key={it.label} className="inline-flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${it.cls}`} />
@@ -232,6 +233,8 @@ const TIPS = {
     'A quick bullish / bearish read on where QQQ is leaning right now, with the chance it heads up.',
   aiDependency:
     'How much of QQQ\'s day-to-day move now comes from the AI build-out — memory, optics, networking, power and grid. The % is today\'s reading, the arrow shows if it\'s rising or falling versus a month ago, and the bars show which area QQQ leans on most. A big-picture trend, separate from the live intraday signals.',
+  aiWindow:
+    'How far back to measure which bottleneck QQQ is leaning on. Shorter windows catch recent shifts; longer ones show the bigger trend. 2 weeks is the floor — anything shorter is too few days to be reliable, so it gets noisy.',
   leadLagDetect:
     'Which sector tends to move a few minutes before QQQ today, and by how long. Shows "Warming up" until there\'s enough data.',
   projection:
@@ -323,24 +326,25 @@ export default function Dashboard() {
     leadLag,
     prediction,
     loading,
-    wsConnected,
     refresh,
     startRealtime,
     stopRealtime,
   } = useMarketStore()
 
-  const [updatedAt, setUpdatedAt] = useState<Date>(new Date())
   const [exporting, setExporting] = useState(false)
   // hit-rate horizon UI (component-local, not store). null = Auto (default).
   const [hitRateAuto, setHitRateAuto] = useState(true)
   const [hitRateHorizon, setHitRateHorizon] = useState<number | null>(null)
+  // AI-dependency lookback window (by server-provided key, e.g. '1M'). Drives the
+  // baseline comparison + the bottleneck ranking over that window. The headline %
+  // (current dependency) stays stable; only the comparison and ranking re-window.
+  const [aiWinKey, setAiWinKey] = useState<string>('1M')
 
   useEffect(() => {
     // background poll is silent (no loading flag) so the UI doesn't flicker/reflow
     // every cycle; the tool auto-refreshes, so there's no manual refresh button.
     const run = () => {
       refresh(true)
-      setUpdatedAt(new Date())
     }
     run()
     const interval = window.setInterval(run, POLL_INTERVAL_MS)
@@ -414,19 +418,55 @@ export default function Dashboard() {
   const aiDep = prediction?.ai_dependency ?? null
   const aiDepReady = aiDep?.status === 'ok'
   const aiDepPct = Math.round((aiDep?.dependency_now ?? 0) * 100)
-  const aiDepChangePts = Math.round((aiDep?.change ?? 0) * 100)
-  const aiDepTrend = (aiDep?.dependency_trend ?? []).map((p) => ({
+  const aiTrendFull = aiDep?.dependency_trend ?? []
+  const aiAvail = aiTrendFull.length
+
+  // windows are measured server-side (the client can't recompute coupling without
+  // the raw daily returns). Pick the selected one; fall back to 1M then the last.
+  const aiWindows = aiDep?.windows ?? []
+  const aiWin =
+    aiWindows.find((w) => w.key === aiWinKey) ??
+    aiWindows.find((w) => w.key === '1M') ??
+    aiWindows[aiWindows.length - 1]
+  const aiWinDays = aiWin?.days ?? 21
+
+  // change + sparkline zoom come from the rolling-dependency trend over `aiWinDays`
+  const aiBaselineIdx = Math.max(0, aiAvail - 1 - aiWinDays)
+  const aiNowVal = aiAvail ? aiTrendFull[aiAvail - 1].value : 0
+  const aiBaseVal = aiAvail ? aiTrendFull[aiBaselineIdx].value : 0
+  const aiChangePts = Math.round((aiNowVal - aiBaseVal) * 100)
+  const aiWindowTrend = aiTrendFull.slice(aiBaselineIdx).map((p) => ({
     date: p.date,
     value: Math.round(p.value * 100),
   }))
-  const aiThemeBars = (aiDep?.themes ?? [])
-    .filter((t) => t.corr_now != null)
-    .map((t) => ({
-      name: t.label,
-      corr: Math.round((t.corr_now ?? 0) * 100),
-      change: t.change,
-      limited: t.limited_history,
-    }))
+  const aiPeriodLabel =
+    aiWin?.key === 'all' ? 'inception' : `the last ${aiWin?.label ?? 'month'}`
+  // strongest coupling over the SELECTED window — re-ranks as you change the window
+  const aiWinThemes = (aiWin?.themes ?? []).filter((t) => t.corr != null)
+  const aiMostCoupled = aiWinThemes[0]?.label
+  const aiHookLine = aiDepReady
+    ? `QQQ is ~${aiDepPct}% explained by the AI build-out — ${
+        aiChangePts >= 0 ? 'up' : 'down'
+      } ${Math.abs(aiChangePts)} pts over ${aiPeriodLabel}.${
+        aiMostCoupled ? ` Most-coupled bottleneck: ${aiMostCoupled}.` : ''
+      }`
+    : ''
+  // is today the highest dependency reading inside the selected window?
+  const aiWindowMax = aiWindowTrend.length ? Math.max(...aiWindowTrend.map((p) => p.value)) : 0
+  const aiAtHigh = aiWindowTrend.length > 3 && aiDepPct >= aiWindowMax
+
+  // theme bars: coupling from the selected window, merged with the static member
+  // metadata (which tickers fed it) carried on the top-level themes.
+  const aiMemberMeta = new Map((aiDep?.themes ?? []).map((t) => [t.key, t]))
+  const aiThemeBars = aiWinThemes.map((t) => ({
+    name: t.label,
+    tickers: (aiMemberMeta.get(t.key)?.members ?? [])
+      .filter((m) => m.included)
+      .map((m) => m.symbol),
+    corr: Math.round((t.corr ?? 0) * 100),
+    change: t.change,
+    limited: t.limited,
+  }))
 
   // --- intraday QQQ projection (measured lead/lag + composite score) ---
   const proj = prediction?.projection ?? null
@@ -510,50 +550,13 @@ export default function Dashboard() {
   const stabilityToneCls = toneClasses(stabilityBadge.tone)
 
   return (
-    <div className="space-y-6">
-      {/* ---------------------------------------------------------- */}
-      {/* hero                                                        */}
-      {/* ---------------------------------------------------------- */}
-      <div className="relative overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-cyan-950/40 p-6 shadow-glow sm:p-8">
-        <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-cyan-500/10 blur-3xl" />
-        <div className="relative">
-          <div className="flex items-center gap-2">
-            <span className="relative flex h-2.5 w-2.5">
-              <span
-                className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                  wsConnected ? 'animate-ping bg-emerald-400' : 'bg-slate-500'
-                }`}
-              />
-              <span
-                className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
-                  wsConnected ? 'bg-emerald-400' : 'bg-slate-500'
-                }`}
-              />
-            </span>
-            <SectionLabel>
-              {wsConnected ? 'Live · realtime feed' : 'Polling · 12s refresh'}
-            </SectionLabel>
-          </div>
-          <h1 className="mt-3 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-            QQQ &amp; Sector Leadership Analytics
-          </h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-            What&apos;s driving QQQ under the hood — the{' '}
-            <span className="font-medium text-fuchsia-300">AI-infra bottlenecks</span>, sector
-            leadership and breadth beneath it — and where it&apos;s headed intraday.
-          </p>
-          <p className="mt-3 text-xs text-slate-500">
-            Auto-refreshing · updated {updatedAt.toLocaleTimeString()}
-          </p>
-        </div>
-      </div>
-
+    <div className="space-y-4">
       {/* ---------------------------------------------------------- */}
       {/* QQQ intraday projection — measured lead/lag + composite      */}
       {/* ---------------------------------------------------------- */}
-      <Card className="relative overflow-hidden p-6 sm:p-7">
+      <Card className="relative overflow-hidden p-5 sm:p-6">
         <div className="pointer-events-none absolute -left-16 -top-16 h-48 w-48 rounded-full bg-indigo-500/10 blur-3xl" />
-        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-indigo-500/10 text-lg text-indigo-300">
@@ -573,7 +576,7 @@ export default function Dashboard() {
 
             {projReady ? (
               <>
-                <div className="mt-3 flex items-center gap-3">
+                <div className="mt-2 flex items-center gap-3">
                   <span className={`text-3xl font-bold ${dirText}`}>{dirArrow}</span>
                   <div>
                     <p className="text-3xl font-semibold tracking-tight text-white">
@@ -589,7 +592,7 @@ export default function Dashboard() {
                     {verdictStyle.label}
                   </span>
                 </div>
-                <p className="mt-3 text-sm text-slate-400">
+                <p className="mt-2 text-sm text-slate-400">
                   Expected move{' '}
                   <strong className={dirText}>
                     {proj!.expected_return >= 0 ? '+' : ''}
@@ -643,9 +646,9 @@ export default function Dashboard() {
       {/* ---------------------------------------------------------- */}
       {/* KPI cards                                                   */}
       {/* ---------------------------------------------------------- */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {/* leadership */}
-        <Card className="animate-fade-up p-5 transition hover:-translate-y-0.5 hover:border-slate-700">
+        <Card className="animate-fade-up p-4 transition hover:-translate-y-0.5 hover:border-slate-700">
           <div className="flex items-start justify-between">
             <LabeledSection label="Strongest sector · 30m" tip={TIPS.relativeStrength} align="left" />
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/10 text-cyan-300">
@@ -665,7 +668,7 @@ export default function Dashboard() {
         </Card>
 
         {/* QQQ health */}
-        <Card className="animate-fade-up p-5 transition hover:-translate-y-0.5 hover:border-slate-700">
+        <Card className="animate-fade-up p-4 transition hover:-translate-y-0.5 hover:border-slate-700">
           <div className="flex items-start justify-between">
             <LabeledSection label="QQQ internal health" tip={TIPS.health} align="left" />
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-500/10 text-emerald-300">
@@ -694,7 +697,7 @@ export default function Dashboard() {
 
         {/* fragility */}
         <Card
-          className={`animate-fade-up p-5 transition hover:-translate-y-0.5 hover:border-slate-700`}
+          className={`animate-fade-up p-4 transition hover:-translate-y-0.5 hover:border-slate-700`}
         >
           <div className="flex items-start justify-between">
             <LabeledSection label="Fragility meter" tip={TIPS.fragility} align="left" />
@@ -716,7 +719,7 @@ export default function Dashboard() {
       {/* ---------------------------------------------------------- */}
       {/* AI-capex dependency — flagship structural read (daily)      */}
       {/* ---------------------------------------------------------- */}
-      <Card className="relative overflow-hidden p-6 sm:p-7">
+      <Card className="relative overflow-hidden p-5 sm:p-6">
         <div className="pointer-events-none absolute -right-20 -top-20 h-52 w-52 rounded-full bg-fuchsia-500/10 blur-3xl" />
         <div className="relative">
           <div className="flex items-center gap-2">
@@ -727,33 +730,56 @@ export default function Dashboard() {
             <span className="ml-1 rounded-full bg-slate-800/80 px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.18em] text-slate-400">
               Structural · daily
             </span>
+            {aiDepReady && aiWindows.length > 0 && (
+              <label className="ml-auto flex items-center gap-1.5 text-[0.7rem] text-slate-400">
+                <span className="inline-flex items-center gap-1">
+                  <span className="hidden sm:inline">Window</span>
+                  <InfoTip text={TIPS.aiWindow} align="right" />
+                </span>
+                <select
+                  value={aiWin?.key ?? '1M'}
+                  onChange={(e) => setAiWinKey(e.target.value)}
+                  className="rounded-lg border border-slate-700 bg-slate-950/70 px-2 py-1 text-xs font-medium text-slate-200 outline-none transition hover:border-slate-500 focus:border-fuchsia-400"
+                >
+                  {aiWindows.map((w) => (
+                    <option key={w.key} value={w.key}>
+                      {w.key === 'all' ? 'Since inception' : w.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
 
           {aiDepReady ? (
-            <div className="mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+            <div className="mt-3 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
               {/* left: headline number + trend */}
               <div>
-                <div className="flex items-end gap-3">
+                <div className="flex flex-wrap items-end gap-x-3 gap-y-1.5">
                   <p className="text-5xl font-bold tracking-tight text-white">{aiDepPct}%</p>
                   <span
                     className={`mb-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      aiDepChangePts > 0
+                      aiChangePts > 0
                         ? 'bg-emerald-500/10 text-emerald-300'
-                        : aiDepChangePts < 0
+                        : aiChangePts < 0
                           ? 'bg-rose-500/10 text-rose-300'
                           : 'bg-slate-700/40 text-slate-300'
                     }`}
                   >
-                    {aiDepChangePts >= 0 ? '▲' : '▼'} {Math.abs(aiDepChangePts)} pts
+                    {aiChangePts >= 0 ? '▲' : '▼'} {Math.abs(aiChangePts)} pts over {aiPeriodLabel}
                   </span>
+                  {aiAtHigh && (
+                    <span className="mb-1.5 inline-flex items-center gap-1 rounded-full bg-fuchsia-500/15 px-2 py-0.5 text-xs font-semibold text-fuchsia-200">
+                      ◆ highest {aiWin?.key === 'all' ? 'on record' : `in ${aiWin?.label}`}
+                    </span>
+                  )}
                 </div>
                 <p className="mt-1 text-sm text-slate-400">
-                  of QQQ&apos;s daily move is explained by the AI build-out complex · vs{' '}
-                  {aiDep!.change_lookback_days}d ago
+                  of QQQ&apos;s daily move is explained by the AI build-out complex
                 </p>
-                <div className="mt-4 h-28">
+                <div className="mt-3 h-24">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={aiDepTrend} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                    <AreaChart data={aiWindowTrend} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
                       <defs>
                         <linearGradient id="aiDepFill" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" stopColor="#e879f9" stopOpacity={0.5} />
@@ -780,16 +806,35 @@ export default function Dashboard() {
                         fill="url(#aiDepFill)"
                         isAnimationActive={false}
                       />
+                      {/* baseline marker — anchors the "vs X" comparison visually */}
+                      {aiWindowTrend.length > 1 && (
+                        <ReferenceDot
+                          x={aiWindowTrend[0].date}
+                          y={aiWindowTrend[0].value}
+                          r={3.5}
+                          fill="#64748b"
+                          stroke="#0f172a"
+                          strokeWidth={2}
+                          isFront
+                        />
+                      )}
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
-                <p className="mt-2 text-xs leading-5 text-slate-400">{aiDep!.headline}</p>
+                <p className="mt-3 text-[0.95rem] font-medium leading-6 text-slate-100">
+                  {aiHookLine}
+                </p>
               </div>
 
-              {/* right: per-bottleneck coupling today */}
+              {/* right: per-bottleneck coupling over the selected window */}
               <div>
-                <p className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">
-                  Coupling to QQQ by bottleneck · 30-day
+                <p className="flex items-center gap-2 text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">
+                  Coupling to QQQ by bottleneck · {aiWin?.label ?? '1 month'}
+                  {aiWin && !aiWin.reliable && (
+                    <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[0.55rem] font-medium normal-case tracking-normal text-amber-300/90">
+                      short window · noisier
+                    </span>
+                  )}
                 </p>
                 <div className="mt-3 space-y-2.5">
                   {aiThemeBars.map((t) => (
@@ -797,6 +842,11 @@ export default function Dashboard() {
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-slate-300">
                           {t.name}
+                          {t.tickers.length > 0 && (
+                            <span className="ml-1 text-[0.65rem] text-slate-500">
+                              ({t.tickers.join(', ')})
+                            </span>
+                          )}
                           {t.limited && (
                             <span className="ml-1.5 text-[0.6rem] text-amber-300/80">
                               limited history

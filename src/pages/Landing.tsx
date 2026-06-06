@@ -192,7 +192,17 @@ export default function Landing() {
                   {depThemes.map((t) => (
                     <div key={t.key}>
                       <div className="flex items-center justify-between text-xs text-slate-400">
-                        <span>{t.label}</span>
+                        <span>
+                          {t.label}
+                          {(() => {
+                            const tk = t.members.filter((m) => m.included).map((m) => m.symbol)
+                            return tk.length ? (
+                              <span className="ml-1 text-[0.65rem] text-slate-500">
+                                ({tk.join(', ')})
+                              </span>
+                            ) : null
+                          })()}
+                        </span>
                         <span className="font-semibold text-slate-200">
                           {Math.round((t.corr_now ?? 0) * 100)}%
                         </span>

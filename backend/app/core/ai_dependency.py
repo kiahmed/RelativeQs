@@ -35,6 +35,17 @@ logger = logging.getLogger(__name__)
 
 
 class AIDependencyEngine:
+    # comparison/ranking windows offered to the UI dropdown (trading days).
+    # 1 week (5d) is intentionally excluded: too few daily points for a stable
+    # correlation. Each is clamped to the basket's available history.
+    _WINDOW_PRESETS = [
+        ("2W", "2 weeks", 10),
+        ("1M", "1 month", 21),
+        ("3M", "3 months", 63),
+        ("6M", "6 months", 126),
+        ("1Y", "1 year", 252),
+    ]
+
     def __init__(
         self,
         target: str = None,
@@ -86,6 +97,7 @@ class AIDependencyEngine:
             "change_lookback_days": self.change_lookback,
             "window_days": self.window,
             "themes": [],
+            "windows": [],
             "headline": "Warming up — not enough daily history to measure AI dependency yet.",
         }
 
@@ -192,6 +204,77 @@ class AIDependencyEngine:
         out.sort(key=lambda t: (t["corr_now"] is None, -(t["corr_now"] or -1)))
         return out
 
+    def _theme_coupling(self, rets: pd.DataFrame, target_ret: pd.Series,
+                        days: int) -> List[Dict[str, Any]]:
+        """Per-theme correlation to the target measured over the last `days`
+        trading days, plus its change vs the immediately-preceding `days` window
+        (so a recent rotation shows as the ordering shifting when `days` shrinks).
+        Lighter than _theme_today — no member metadata, the client merges that."""
+        n = len(rets)
+        recent = rets.tail(days)
+        p_start, p_end = max(n - 2 * days, 0), max(n - days, 0)
+        prior = rets.iloc[p_start:p_end]
+        tgt_recent = target_ret.tail(days)
+        tgt_prior = target_ret.iloc[p_start:p_end]
+
+        out: List[Dict[str, Any]] = []
+        for theme in self.basket:
+            members = [str(m.get("symbol", "")).upper().strip()
+                       for m in theme.get("members", [])]
+            present = [m for m in members
+                       if m in rets.columns and int(rets[m].notna().sum()) >= self.min_obs]
+            corr_now = None
+            change = 0.0
+            limited = len(present) == 0
+            if present:
+                tr = recent[present].mean(axis=1, skipna=True)
+                al = pd.concat([tgt_recent, tr], axis=1).dropna()
+                if len(al) >= self.min_obs:
+                    y = al.iloc[:, 0].to_numpy(dtype=float)
+                    x = al.iloc[:, 1].to_numpy(dtype=float)
+                    if np.std(x) > 0 and np.std(y) > 0:
+                        corr_now = float(np.corrcoef(y, x)[0, 1])
+                pp = [c for c in present if c in prior.columns]
+                if pp and corr_now is not None:
+                    tp = prior[pp].mean(axis=1, skipna=True)
+                    ap = pd.concat([tgt_prior, tp], axis=1).dropna()
+                    if len(ap) >= self.min_obs:
+                        yp = ap.iloc[:, 0].to_numpy(dtype=float)
+                        xp = ap.iloc[:, 1].to_numpy(dtype=float)
+                        if np.std(xp) > 0 and np.std(yp) > 0:
+                            change = float(corr_now - float(np.corrcoef(yp, xp)[0, 1]))
+            out.append({
+                "key": theme.get("key"),
+                "label": theme.get("label", theme.get("key")),
+                "corr": corr_now,
+                "change": change,
+                "limited": limited,
+            })
+        out.sort(key=lambda t: (t["corr"] is None, -(t["corr"] or -1)))
+        return out
+
+    def _build_windows(self, rets: pd.DataFrame, target_ret: pd.Series) -> List[Dict[str, Any]]:
+        """Bottleneck coupling re-measured over a set of lookback windows so the
+        UI can re-rank the basket by timeframe. Presets longer than the available
+        history are dropped; an 'inception' window over all history is appended."""
+        n = len(rets)
+        windows: List[Dict[str, Any]] = []
+        for key, label, days in self._WINDOW_PRESETS:
+            if days >= n - 1:
+                continue
+            windows.append({
+                "key": key, "label": label, "days": int(days),
+                "reliable": days >= self.min_obs,
+                "themes": self._theme_coupling(rets, target_ret, days),
+            })
+        incp = max(n - 1, self.min_obs)
+        windows.append({
+            "key": "all", "label": "since inception", "days": int(incp),
+            "reliable": True,
+            "themes": self._theme_coupling(rets, target_ret, incp),
+        })
+        return windows
+
     def _headline(self, dep_now: float, change: float, themes: List[Dict[str, Any]]) -> str:
         pct = int(round(dep_now * 100))
         lead = next((t for t in themes if t["corr_now"] is not None), None)
@@ -259,7 +342,9 @@ class AIDependencyEngine:
         else:
             dep_change = dep_now - float(trend[0]["value"])
 
-        themes = self._theme_today(rets.drop(columns=[self.target], errors="ignore"), target_ret)
+        rets_basket = rets.drop(columns=[self.target], errors="ignore")
+        themes = self._theme_today(rets_basket, target_ret)
+        windows = self._build_windows(rets_basket, target_ret)
 
         result = {
             "status": "ok",
@@ -271,6 +356,7 @@ class AIDependencyEngine:
             "change_lookback_days": self.change_lookback,
             "window_days": self.window,
             "themes": themes,
+            "windows": windows,
             "headline": self._headline(dep_now, dep_change, themes),
         }
         logger.info(

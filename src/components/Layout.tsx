@@ -30,11 +30,19 @@ export default function Layout() {
       <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-4 py-3.5 sm:px-6">
           <Link to="/" className="group flex items-center gap-2.5">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-glow transition group-hover:scale-105">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-glow transition group-hover:scale-105">
               <Logo className="h-5 w-5" />
             </span>
-            <span className="text-lg font-semibold tracking-tight text-white">
-              Relative<span className="text-cyan-300">Qs</span>
+            <span className="flex flex-col leading-tight">
+              <span className="text-lg font-semibold tracking-tight text-white">
+                Relative<span className="text-cyan-300">Qs</span>
+              </span>
+              <span className="hidden whitespace-nowrap text-[0.72rem] text-slate-300 lg:block">
+                What&apos;s driving{' '}
+                <span className="text-sm font-semibold text-white">QQQ</span> intraday —
+                leadership, breadth &amp;{' '}
+                <span className="font-medium text-fuchsia-300">AI-infra bottlenecks</span>
+              </span>
             </span>
           </Link>
 
