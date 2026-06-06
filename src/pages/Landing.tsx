@@ -248,16 +248,23 @@ export default function Landing() {
 
       {/* ---- proof + ETF universe ---- */}
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <section className="rounded-3xl border border-emerald-800/40 bg-gradient-to-br from-slate-900 to-emerald-950/30 p-8 shadow-glow">
-          <SectionLabel>Backed by a backtest</SectionLabel>
+        <section className="rounded-3xl border border-fuchsia-800/40 bg-gradient-to-br from-slate-900 to-fuchsia-950/30 p-8 shadow-glow">
+          <SectionLabel>Why it matters</SectionLabel>
           <h2 className="mt-3 text-2xl font-semibold text-white">
-            A signal that held up over 12 years
+            The Nasdaq has become an AI build-out trade
           </h2>
           <p className="mt-3 max-w-xl text-sm leading-7 text-slate-300">
-            Over 2014–2026, following QQQ’s trend regime matched buy-and-hold’s
-            return with a <strong className="text-emerald-300">~13-point shallower
-            maximum drawdown</strong> (−22% vs −35%). We don’t claim to predict
-            tech — we make its current posture legible.
+            More and more of QQQ’s daily move now traces back to a handful of AI
+            bottlenecks — <strong className="text-fuchsia-300">memory, optics/EUV,
+            servers &amp; networking, power and the grid</strong>. Most dashboards
+            still treat tech as one block. RelativeQs measures that dependency
+            directly and tracks how it’s shifting, so you can see <em>which</em>
+            part of the build-out is actually carrying the index right now.
+          </p>
+          <p className="mt-3 max-w-xl text-sm leading-7 text-slate-300">
+            It’s measured from real daily returns — not index weights, not
+            guesswork — and the basket is configurable as new bottleneck funds and
+            companies emerge.
           </p>
           <p className="mt-4 text-xs text-slate-500">
             Nasdaq-100 internals analytics and education — not investment advice. Past
