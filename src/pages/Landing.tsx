@@ -81,39 +81,68 @@ export default function Landing() {
         <div className="pointer-events-none absolute -right-20 -top-20 h-60 w-60 rounded-full bg-cyan-500/10 blur-3xl" />
         <div className="pointer-events-none absolute -bottom-24 -left-16 h-56 w-56 rounded-full bg-indigo-500/10 blur-3xl" />
 
-        <div className="relative max-w-3xl animate-fade-up">
-          <SectionLabel>Tech-regime intelligence · QQQ / Nasdaq-100</SectionLabel>
-          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-            See which <span className="text-fuchsia-300">AI-infra bottlenecks</span> are driving
-            tech — and whether it’s{' '}
-            <span className="text-emerald-400">risk-on</span> or{' '}
-            <span className="text-rose-400">risk-off</span> now.
-          </h1>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-            RelativeQs traces QQQ’s move to the AI build-out funds underneath — memory, power,
-            networking and more — and reads the rotation, breadth and fragility beneath it.
-          </p>
+        <div className="relative flex animate-fade-up flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="max-w-2xl">
+            <SectionLabel>Tech-regime intelligence · QQQ / Nasdaq-100</SectionLabel>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+              See which <span className="text-fuchsia-300">AI-infra bottlenecks</span> are driving
+              tech — and whether it’s{' '}
+              <span className="text-emerald-400">risk-on</span> or{' '}
+              <span className="text-rose-400">risk-off</span> now.
+            </h1>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+              RelativeQs traces QQQ’s move to the AI build-out funds underneath — memory, power,
+              networking and more — and reads the rotation, breadth and fragility beneath it.
+            </p>
 
-          {/* key takeaways — live, glowing */}
-          <div className="mt-6 flex flex-wrap gap-3">
-            {[
-              { dot: 'bg-fuchsia-400', label: 'AI-dependency index' },
-              { dot: 'bg-indigo-400', label: 'Sector ETF rotation' },
-              { dot: 'bg-emerald-400', label: 'Live Nasdaq-100 breadth' },
-            ].map((b) => (
-              <span
-                key={b.label}
-                className="inline-flex animate-pulse-glow items-center gap-2 rounded-full border border-slate-700/70 bg-slate-900/80 px-4 py-2 text-sm font-medium text-slate-100"
-              >
-                <span className="relative flex h-2 w-2">
-                  <span
-                    className={`absolute inline-flex h-full w-full animate-ping rounded-full ${b.dot} opacity-75`}
-                  />
-                  <span className={`relative inline-flex h-2 w-2 rounded-full ${b.dot}`} />
+            {/* key takeaways — live, glowing */}
+            <div className="mt-6 flex flex-wrap gap-3">
+              {[
+                { dot: 'bg-fuchsia-400', label: 'AI-dependency index' },
+                { dot: 'bg-indigo-400', label: 'Sector ETF rotation' },
+                { dot: 'bg-emerald-400', label: 'Live Nasdaq-100 breadth' },
+              ].map((b) => (
+                <span
+                  key={b.label}
+                  className="inline-flex animate-pulse-glow items-center gap-2 rounded-full border border-slate-700/70 bg-slate-900/80 px-4 py-2 text-sm font-medium text-slate-100"
+                >
+                  <span className="relative flex h-2 w-2">
+                    <span
+                      className={`absolute inline-flex h-full w-full animate-ping rounded-full ${b.dot} opacity-75`}
+                    />
+                    <span className={`relative inline-flex h-2 w-2 rounded-full ${b.dot}`} />
+                  </span>
+                  {b.label}
                 </span>
-                {b.label}
-              </span>
-            ))}
+              ))}
+            </div>
+          </div>
+
+          {/* CTA — lives in the hero's empty right space */}
+          <div className="flex shrink-0 flex-col gap-3 lg:w-52 lg:pl-4">
+            {user ? (
+              <Link
+                to="/dashboard"
+                className="inline-flex items-center justify-center rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-6 py-3 text-sm font-semibold text-slate-950 shadow-glow transition hover:opacity-90"
+              >
+                Open dashboard →
+              </Link>
+            ) : (
+              <>
+                <Link
+                  to="/register"
+                  className="inline-flex items-center justify-center rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-6 py-3 text-sm font-semibold text-slate-950 shadow-glow transition hover:opacity-90"
+                >
+                  Get started — free
+                </Link>
+                <Link
+                  to="/login"
+                  className="inline-flex items-center justify-center rounded-full border border-slate-700 px-6 py-3 text-sm font-semibold text-slate-100 transition hover:border-slate-500 hover:bg-slate-800"
+                >
+                  Log in
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </section>

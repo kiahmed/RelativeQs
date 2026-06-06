@@ -18,6 +18,7 @@ const navLinks = [
   { label: 'About', href: '/about' },
   { label: 'Pricing', href: '/pricing' },
   { label: 'Contact', href: '/contact' },
+  { label: 'Dashboard', href: '/dashboard' },
 ]
 
 export default function Layout() {
@@ -70,34 +71,20 @@ export default function Layout() {
                 >
                   {user.fullName || user.email}
                 </Link>
-                <Link
-                  to="/dashboard"
-                  className="rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-glow transition hover:opacity-90"
-                >
-                  Open dashboard →
-                </Link>
                 <button
                   onClick={logout}
-                  className="hidden rounded-full border border-slate-700 px-3.5 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-500 hover:bg-slate-800 sm:inline"
+                  className="rounded-full border border-slate-700 px-3.5 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-500 hover:bg-slate-800"
                 >
                   Log out
                 </button>
               </>
             ) : (
-              <>
-                <Link
-                  to="/login"
-                  className="hidden text-sm font-medium text-slate-300 transition hover:text-white sm:inline"
-                >
-                  Login
-                </Link>
-                <Link
-                  to="/register"
-                  className="rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-glow transition hover:opacity-90"
-                >
-                  Get started
-                </Link>
-              </>
+              <Link
+                to="/login"
+                className="rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:opacity-90"
+              >
+                Login
+              </Link>
             )}
           </div>
         </div>

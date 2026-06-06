@@ -223,35 +223,35 @@ function LabeledSection({
 /* tooltip copy — what each card shows and how to read it */
 const TIPS = {
   relativeStrength:
-    'The sector ETF with the strongest 30-minute momentum right now (same intraday engine as the rest of the dashboard). Green = gaining, red = fading. It is the current momentum leader by magnitude — distinct from the Lead/Lag card, which is about timing (what moves before QQQ).',
+    'The sector that\'s moved up the most in the last 30 minutes. Green = gaining, red = fading.',
   health:
-    'A 0–100 composite of the measured rotation read: directional conviction (probability up), participation breadth (share of the universe with positive momentum) and fragility. 75+ = broad, healthy participation; below 50 = narrow, fragile participation. The higher the score, the more you can trust a QQQ move. (This is about how *broad* the move is — distinct from the Lead/Lag card, which is about *timing*.)',
+    'A 0–100 score for how broad and healthy the move under QQQ is. Higher = more sectors are backing it, so the move is more trustworthy. Below 50 = narrow and shaky.',
   fragility:
-    'Intraday fragility from the composite engine — the share of the universe diverging or showing weakness while QQQ pushes (masked weakness). LOW = move is well-supported; HIGH (≥50%) = strength is masking weakness underneath and is more likely to reverse.',
+    'How much hidden weakness is under the move. LOW = well supported. HIGH = the surface looks strong but it\'s weak underneath, so it\'s more likely to reverse.',
   leadLagScore:
-    'The intraday composite read (same engine as the projection): leadership + broadening − fragility, rolled into a probability that QQQ is heading up over the short horizon. Above 55% leans bullish, below 45% bearish. This is the live intraday signal that drives the projection.',
+    'A quick bullish / bearish read on where QQQ is leaning right now, with the chance it heads up.',
   aiDependency:
-    'Structural, NOT intraday. How much of QQQ\'s DAILY move is explained by the AI build-out complex — memory, optics/EUV, servers/networking, power, grid — measured as the rolling R² of QQQ daily returns on the basket, tracked over all available history. The change pill shows whether that dependency is rising or falling vs a month ago; the bars show which bottleneck QQQ is most coupled to today. Basket is config-driven (ETFs and/or bellwether stocks) and never fabricated — young funds are flagged "limited history". This is a backdrop read for analysts; it does NOT feed the intraday score or projection.',
+    'How much of QQQ\'s day-to-day move now comes from the AI build-out — memory, optics, networking, power and grid. The % is today\'s reading, the arrow shows if it\'s rising or falling versus a month ago, and the bars show which area QQQ leans on most. A big-picture trend, separate from the live intraday signals.',
   leadLagDetect:
-    'Which sector ETF is measured to move BEFORE QQQ this session, and by how many minutes. The leader, lag and correlation are computed from intraday cross-correlation across the whole ETF universe — not hardcoded. While the engine is gathering enough 1-minute bars it shows "Warming up".',
+    'Which sector tends to move a few minutes before QQQ today, and by how long. Shows "Warming up" until there\'s enough data.',
   projection:
-    'A short-horizon read on where QQQ is headed, built from the measured leader\'s recent move (scaled by its correlation and beta) plus the composite rotation score. Shows the verdict (continue / stall / fragile), a projected price with an uncertainty band, direction and confidence. Warming up until enough session bars accumulate.',
+    'Where QQQ may be headed over the next few minutes, with a likely price range and whether the move should continue, stall, or is fragile.',
   attribution:
-    'Data-driven attribution of the current QQQ move to the engines underneath it (semis, software, mega-cap). A multivariate regression of QQQ returns on each driver gives its share of the move; "explained" is how much of QQQ the drivers account for, the rest is residual. This is measured, not index weights.',
+    'What\'s pushing QQQ right now — how much of its move comes from semis, software and mega-caps. "Explained" is how much these account for; the rest is everything else.',
   confirmation:
-    'The pre-trade check. CONFIRMED = QQQ is moving with broad sector participation and the leaders agree — the move is backed. UNCONFIRMED = only a few sectors are participating, fade risk. FRAGILE = internal fragility is high, treat any move with caution.',
+    'A quick pre-trade check. CONFIRMED = the move has broad sector backing. UNCONFIRMED = only a few sectors are in, so fade risk. FRAGILE = shaky underneath, trade with caution.',
   correlationRegime:
-    'Whether the tech sectors are moving together right now — the regime read for QQQ. COUPLED = high average pairwise correlation, so lead/lag and rotation signals are meaningful. FRAGMENTED = sectors are doing their own thing, treat lead/lag as noise today. TRANSITIONAL = in between. The rolling-correlation chart below visualises the same thing over time.',
+    'Whether the tech sectors are moving together right now. Together = the lead/lag and rotation signals are reliable. Doing their own thing = treat those signals as noise today.',
   stability:
-    'Cross-session check on whether the measured leader actually persists. TRADEABLE = the same leader has led across recent sessions at a consistent lag. UNSTABLE = the leader keeps changing. GATHERING = not enough sessions collected yet.',
+    'Whether the same sector keeps leading day after day. TRADEABLE = a consistent leader. UNSTABLE = it keeps changing. GATHERING = not enough sessions yet.',
   hitRate:
-    'How often QQQ actually followed the leader\'s move, measured from stored bars. The horizon is auto-tied to the measured lead by default; toggle Auto off to inspect fixed horizons. Compare the hit-rate to the naive baseline — a positive edge is what matters.',
+    'How often QQQ actually followed the leader in the past. Compare it to the baseline — being above it is what counts.',
   rollingCorr:
-    'How tightly QQQ tracks XLK and SMH over a rolling window (1.0 = moving in lock-step). Falling correlation means leadership is fragmenting — often an early warning of a regime change.',
+    'How closely QQQ tracks XLK and SMH over time (1.0 = moving in lock-step). Falling = leadership is breaking down, often an early warning.',
   breadth:
-    'Real participation measured from QQQ\'s ~100 underlying stocks. EQUAL-WEIGHT = how many names are advancing (true breadth). CAP-WEIGHT = how much of the index weight is advancing (is the move real for QQQ, which is top-heavy). Cap far above equal = a few mega-caps carrying a narrow tape; equal above cap = broad strength the giants are lagging.',
+    'How many of QQQ\'s ~100 stocks are rising. Equal-weight = how many names are up. Cap-weight = whether the big names are doing the lifting. Cap well above equal = a few giants carrying a narrow market; equal above cap = broad strength.',
   signalUniverse:
-    'Per-ETF live stats: daily change, momentum (0–10), relative strength (RS) vs its own trend, and spread divergence vs industrials. Use it to see which sectors confirm — or contradict — the headline QQQ move.',
+    'Live stats for each sector ETF — daily change, momentum and relative strength — so you can see which sectors agree or disagree with QQQ\'s move.',
 }
 
 /** circular progress ring */
@@ -316,7 +316,6 @@ const axisTick = { fill: '#64748b', fontSize: 11 }
 /* ------------------------------------------------------------------ */
 
 export default function Dashboard() {
-  const user = useAuthStore((state) => state.user)
   const token = useAuthStore((state) => state.token)
   const {
     rollingCorrelation,
@@ -338,7 +337,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     // background poll is silent (no loading flag) so the UI doesn't flicker/reflow
-    // every cycle; the manual refresh button passes silent=false for visible feedback.
+    // every cycle; the tool auto-refreshes, so there's no manual refresh button.
     const run = () => {
       refresh(true)
       setUpdatedAt(new Date())
@@ -517,61 +516,37 @@ export default function Dashboard() {
       {/* ---------------------------------------------------------- */}
       <div className="relative overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-cyan-950/40 p-6 shadow-glow sm:p-8">
         <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-cyan-500/10 blur-3xl" />
-        <div className="relative flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="relative flex h-2.5 w-2.5">
-                <span
-                  className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                    wsConnected ? 'animate-ping bg-emerald-400' : 'bg-slate-500'
-                  }`}
-                />
-                <span
-                  className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
-                    wsConnected ? 'bg-emerald-400' : 'bg-slate-500'
-                  }`}
-                />
-              </span>
-              <SectionLabel>
-                {wsConnected ? 'Live · realtime feed' : 'Polling · 12s refresh'}
-              </SectionLabel>
-            </div>
-            <h1 className="mt-3 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-              QQQ &amp; Sector Leadership Analytics
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-              What's driving QQQ under the hood and where it's headed intraday — leadership,
-              breadth, fragility and a short-horizon projection, all in one glance.
-            </p>
+        <div className="relative">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2.5 w-2.5">
+              <span
+                className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                  wsConnected ? 'animate-ping bg-emerald-400' : 'bg-slate-500'
+                }`}
+              />
+              <span
+                className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
+                  wsConnected ? 'bg-emerald-400' : 'bg-slate-500'
+                }`}
+              />
+            </span>
+            <SectionLabel>
+              {wsConnected ? 'Live · realtime feed' : 'Polling · 12s refresh'}
+            </SectionLabel>
           </div>
-
-          <div className="flex items-center gap-3">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
-              <p className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">Signed in</p>
-              <p className="mt-0.5 max-w-[12rem] truncate text-sm font-medium text-white">
-                {user?.email ?? 'Guest'}
-              </p>
-              <p className="mt-1 text-[0.7rem] text-slate-400">
-                Updated {updatedAt.toLocaleTimeString()}
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                refresh()
-                setUpdatedAt(new Date())
-              }}
-              disabled={loading}
-              className="grid h-12 w-12 place-items-center rounded-2xl border border-slate-700 bg-slate-950/70 text-cyan-300 transition hover:border-cyan-500/50 hover:bg-slate-900 disabled:opacity-50"
-              title="Refresh now"
-            >
-              <span className={`text-lg ${loading ? 'animate-spin' : ''}`}>↻</span>
-            </button>
-          </div>
+          <h1 className="mt-3 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+            QQQ &amp; Sector Leadership Analytics
+          </h1>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+            What&apos;s driving QQQ under the hood — the{' '}
+            <span className="font-medium text-fuchsia-300">AI-infra bottlenecks</span>, sector
+            leadership and breadth beneath it — and where it&apos;s headed intraday.
+          </p>
+          <p className="mt-3 text-xs text-slate-500">
+            Auto-refreshing · updated {updatedAt.toLocaleTimeString()}
+          </p>
         </div>
       </div>
-
-      {/* regime-change alert toggle (Pro only; renders nothing for free) */}
-      <AlertToggle />
 
       {/* ---------------------------------------------------------- */}
       {/* QQQ intraday projection — measured lead/lag + composite      */}
@@ -1119,7 +1094,11 @@ export default function Dashboard() {
 
           {/* Nasdaq-100 breadth — real constituent participation */}
           <Card className="p-6">
-            <LabeledSection label="QQQ breadth · 100 stocks" tip={TIPS.breadth} align="left" />
+            <div className="flex items-start justify-between gap-3">
+              <LabeledSection label="QQQ breadth · 100 stocks" tip={TIPS.breadth} align="left" />
+              {/* breadth-shift email alerts live here — this is what the alert tracks */}
+              <AlertToggle compact />
+            </div>
             {breadthReady && breadth ? (
               <>
                 <div className="mt-3 flex items-center justify-between">
