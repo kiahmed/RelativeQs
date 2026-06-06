@@ -2,6 +2,7 @@ import { Suspense } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import { useAuthStore } from '../store/useAuthStore'
 import Logo from './Logo'
+import Footer from './Footer'
 
 /** Shown while a lazy-loaded page chunk is being fetched. */
 function PageFallback() {
@@ -17,7 +18,6 @@ const navLinks = [
   { label: 'About', href: '/about' },
   { label: 'Pricing', href: '/pricing' },
   { label: 'Contact', href: '/contact' },
-  { label: 'Dashboard', href: '/dashboard' },
 ]
 
 export default function Layout() {
@@ -25,7 +25,7 @@ export default function Layout() {
   const logout = useAuthStore((state) => state.logout)
 
   return (
-    <div className="min-h-screen text-slate-100">
+    <div className="flex min-h-screen flex-col text-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-4 py-3.5 sm:px-6">
           <Link to="/" className="group flex items-center gap-2.5">
@@ -70,30 +70,46 @@ export default function Layout() {
                 >
                   {user.fullName || user.email}
                 </Link>
+                <Link
+                  to="/dashboard"
+                  className="rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-glow transition hover:opacity-90"
+                >
+                  Open dashboard →
+                </Link>
                 <button
                   onClick={logout}
-                  className="rounded-full border border-slate-700 px-3.5 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-500 hover:bg-slate-800"
+                  className="hidden rounded-full border border-slate-700 px-3.5 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-500 hover:bg-slate-800 sm:inline"
                 >
                   Log out
                 </button>
               </>
             ) : (
-              <Link
-                to="/login"
-                className="rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:opacity-90"
-              >
-                Login
-              </Link>
+              <>
+                <Link
+                  to="/login"
+                  className="hidden text-sm font-medium text-slate-300 transition hover:text-white sm:inline"
+                >
+                  Login
+                </Link>
+                <Link
+                  to="/register"
+                  className="rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-4 py-2 text-sm font-semibold text-slate-950 shadow-glow transition hover:opacity-90"
+                >
+                  Get started
+                </Link>
+              </>
             )}
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-8 sm:px-6 lg:px-8">
         <Suspense fallback={<PageFallback />}>
           <Outlet />
         </Suspense>
       </main>
+
+      <Footer />
     </div>
   )
 }

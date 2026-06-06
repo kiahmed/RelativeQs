@@ -75,61 +75,45 @@ export default function Landing() {
   const depThemes = (aiDep?.themes ?? []).filter((t) => t.corr_now != null).slice(0, 5)
 
   return (
-    <div className="space-y-8">
-      {/* ---- hero ---- */}
-      <section className="relative overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-cyan-950/40 p-8 shadow-glow sm:p-12">
-        <div className="pointer-events-none absolute -right-20 -top-20 h-72 w-72 rounded-full bg-cyan-500/10 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-24 -left-16 h-64 w-64 rounded-full bg-indigo-500/10 blur-3xl" />
+    <div className="space-y-6">
+      {/* ---- hero (compact) ---- */}
+      <section className="relative overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-cyan-950/40 p-6 shadow-glow sm:p-8">
+        <div className="pointer-events-none absolute -right-20 -top-20 h-60 w-60 rounded-full bg-cyan-500/10 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-24 -left-16 h-56 w-56 rounded-full bg-indigo-500/10 blur-3xl" />
 
         <div className="relative max-w-3xl animate-fade-up">
           <SectionLabel>Tech-regime intelligence · QQQ / Nasdaq-100</SectionLabel>
-          <h1 className="mt-4 text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-            Plan a better tech trade — know whether tech is{' '}
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+            See which <span className="text-fuchsia-300">AI-infra bottlenecks</span> are driving
+            tech — and whether it’s{' '}
             <span className="text-emerald-400">risk-on</span> or{' '}
-            <span className="text-rose-400">risk-off</span> right now.
+            <span className="text-rose-400">risk-off</span> now.
           </h1>
-          <p className="mt-5 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
-            RelativeQs reads the Nasdaq-100 (QQQ) and the sector ETFs that drive it,
-            and distils them into one clear call: is tech risk-on or risk-off — plus
-            the leadership, breadth, and fragility behind the move.
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+            RelativeQs traces QQQ’s move to the AI build-out funds underneath — memory, power,
+            networking and more — and reads the rotation, breadth and fragility beneath it.
           </p>
 
-          <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-            {!user ? (
-              <>
-                <Link
-                  to="/register"
-                  className="inline-flex items-center justify-center rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:opacity-90"
-                >
-                  Get started — it’s free
-                </Link>
-                <Link
-                  to="/login"
-                  className="inline-flex items-center justify-center rounded-full border border-slate-700 px-6 py-3 text-sm font-semibold text-slate-100 transition hover:border-slate-500 hover:bg-slate-800"
-                >
-                  Log in
-                </Link>
-              </>
-            ) : (
-              <Link
-                to="/dashboard"
-                className="inline-flex items-center justify-center rounded-full bg-gradient-to-r from-cyan-400 to-indigo-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:opacity-90"
+          {/* key takeaways — live, glowing */}
+          <div className="mt-6 flex flex-wrap gap-3">
+            {[
+              { dot: 'bg-fuchsia-400', label: 'AI-dependency index' },
+              { dot: 'bg-indigo-400', label: 'Sector ETF rotation' },
+              { dot: 'bg-emerald-400', label: 'Live Nasdaq-100 breadth' },
+            ].map((b) => (
+              <span
+                key={b.label}
+                className="inline-flex animate-pulse-glow items-center gap-2 rounded-full border border-slate-700/70 bg-slate-900/80 px-4 py-2 text-sm font-medium text-slate-100"
               >
-                Open dashboard →
-              </Link>
-            )}
-          </div>
-
-          <div className="mt-8 flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-400">
-            <span className="inline-flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-fuchsia-400" /> AI-dependency index
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-indigo-400" /> Sector ETF rotation
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Live Nasdaq-100 breadth
-            </span>
+                <span className="relative flex h-2 w-2">
+                  <span
+                    className={`absolute inline-flex h-full w-full animate-ping rounded-full ${b.dot} opacity-75`}
+                  />
+                  <span className={`relative inline-flex h-2 w-2 rounded-full ${b.dot}`} />
+                </span>
+                {b.label}
+              </span>
+            ))}
           </div>
         </div>
       </section>
@@ -222,25 +206,25 @@ export default function Landing() {
 
       {/* ---- features ---- */}
       <section>
-        <div className="mb-5">
+        <div className="mb-4">
           <SectionLabel>What you get</SectionLabel>
-          <h2 className="mt-2 text-2xl font-semibold text-white">
+          <h2 className="mt-1.5 text-xl font-semibold text-white sm:text-2xl">
             The Nasdaq-100, read in one glance
           </h2>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {features.map((f) => (
             <div
               key={f.title}
-              className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-card transition hover:-translate-y-0.5 hover:border-slate-700"
+              className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 shadow-card transition hover:-translate-y-0.5 hover:border-slate-700"
             >
               <span
-                className={`grid h-10 w-10 place-items-center rounded-xl text-lg ${f.iconBg} ${f.iconText}`}
+                className={`grid h-9 w-9 place-items-center rounded-xl text-base ${f.iconBg} ${f.iconText}`}
               >
                 {f.icon}
               </span>
-              <h3 className="mt-4 text-base font-semibold text-white">{f.title}</h3>
-              <p className="mt-1.5 text-sm leading-6 text-slate-400">{f.desc}</p>
+              <h3 className="mt-3 text-sm font-semibold text-white">{f.title}</h3>
+              <p className="mt-1 text-xs leading-5 text-slate-400">{f.desc}</p>
             </div>
           ))}
         </div>
@@ -273,9 +257,10 @@ export default function Landing() {
         </section>
 
         <aside className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-glow">
-          <SectionLabel>ETF universe</SectionLabel>
+          <SectionLabel>What moves QQQ</SectionLabel>
           <p className="mt-3 text-sm leading-6 text-slate-400">
-            The instruments continuously monitored behind every signal.
+            QQQ is the sum of these flows. The dashboard ranks each by how hard it’s
+            pulling the index right now — leader, confirmer or drag.
           </p>
           <div className="mt-5 grid grid-cols-2 gap-2">
             {etfs.map((e) => (
