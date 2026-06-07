@@ -99,3 +99,42 @@ def test_entries_sorted_by_corr_desc():
     res = LeadLagEngine().compute(bars)
     corrs = [e["best_corr"] for e in res["entries"]]
     assert corrs == sorted(corrs, reverse=True)
+
+
+def test_resampled_frame_scales_lag_minutes():
+    """At a 5-min frame, a reported lag of k bars means k*5 minutes."""
+    bars = make_synthetic_session(n_bars=300, lead_symbol="SMH",
+                                  lead_minutes=10, lead_strength=0.9, seed=4)
+    res = LeadLagEngine().compute(bars, freq_minutes=5, max_lag=3, min_bars=18)
+    assert res["bar_minutes"] == 5
+    assert res["status"] in ("ok", "warming_up")
+    if res["leader"]:
+        # lag_minutes is a multiple of the 5-min frame
+        assert res["leader"]["lag_minutes"] % 5 == 0
+    for e in res["entries"]:
+        assert e["lag_minutes"] == e["best_lag"] * 5
+
+
+def test_coarser_frame_warms_up_with_few_bars():
+    bars = make_synthetic_session(n_bars=40, seed=1)
+    res = LeadLagEngine().compute(bars, freq_minutes=15, max_lag=2, min_bars=8)
+    # 40 1-min bars -> ~3 fifteen-min bars -> below min_bars
+    assert res["status"] == "warming_up"
+    assert res["bar_minutes"] == 15
+
+
+def test_detect_decoupling_flags_broken_rank():
+    """A driver that's tightly coupled in the baseline but decoupled now
+    should be flagged; one that stays coupled should not."""
+    baseline = {"entries": [
+        {"symbol": "SMH", "corr_at_zero": 0.85},
+        {"symbol": "XLF", "corr_at_zero": 0.70},
+    ]}
+    current = {"entries": [
+        {"symbol": "SMH", "corr_at_zero": 0.20},   # broke ranks
+        {"symbol": "XLF", "corr_at_zero": 0.68},   # still coupled
+    ]}
+    out = LeadLagEngine.detect_decoupling(current, baseline)
+    syms = [d["symbol"] for d in out]
+    assert "SMH" in syms and "XLF" not in syms
+    assert out[0]["drop"] >= 0.3

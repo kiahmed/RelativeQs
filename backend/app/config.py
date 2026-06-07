@@ -155,6 +155,10 @@ class Settings:
     LEAD_LAG_MIN_BARS: int = _env_int("LEAD_LAG_MIN_BARS", 45)
     # Correlation threshold for a symbol to qualify as leader/confirmer
     LEAD_LAG_CORR_THRESHOLD: float = _env_float("LEAD_LAG_CORR_THRESHOLD", 0.25)
+    # Streak filter: a measured lead is only PROMOTED to a confirmed leader after
+    # it recurs on this many consecutive new bars at a timeframe (kills one-off
+    # noise; default output is "no repeating lead" until the pattern is real).
+    LEAD_LAG_STREAK_MIN: int = _env_int("LEAD_LAG_STREAK_MIN", 3)
     # Projection horizon in minutes
     PROJECTION_HORIZON_MINUTES: int = _env_int("PROJECTION_HORIZON_MINUTES", 15)
     # Never call the Yahoo download path more often than this (seconds) — rate-limit guard.

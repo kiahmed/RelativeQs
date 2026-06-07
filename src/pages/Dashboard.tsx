@@ -236,7 +236,7 @@ const TIPS = {
   aiWindow:
     'How far back to measure which bottleneck QQQ is leaning on. Shorter windows catch recent shifts; longer ones show the bigger trend. 2 weeks is the floor — anything shorter is too few days to be reliable, so it gets noisy.',
   leadLagDetect:
-    'Which sector tends to move a few minutes before QQQ today, and by how long. Shows "Warming up" until there\'s enough data.',
+    'Which sector reliably moves BEFORE QQQ, measured on 15-min (or 5-min) bars. A lead is only reported once it REPEATS on 3 bars in a row — so most of the time it honestly says "no repeating lead." "Broke ranks" flags a sector that usually moves with QQQ but just decoupled. The hit-rate below scores follow-through on the confirmed lead.',
   projection:
     'Where QQQ may be headed over the next few minutes, with a likely price range and whether the move should continue, stall, or is fragile.',
   attribution:
@@ -323,7 +323,6 @@ export default function Dashboard() {
   const {
     rollingCorrelation,
     qqqHealth,
-    leadLag,
     prediction,
     loading,
     refresh,
@@ -339,6 +338,8 @@ export default function Dashboard() {
   // baseline comparison + the bottleneck ranking over that window. The headline %
   // (current dependency) stays stable; only the comparison and ranking re-window.
   const [aiWinKey, setAiWinKey] = useState<string>('1M')
+  // lead/lag timeframe — 15m default (calmer); 5m faster/noisier; daily = cross-day.
+  const [leadTf, setLeadTf] = useState<'5min' | '15min' | 'daily'>('15min')
 
   useEffect(() => {
     // background poll is silent (no loading flag) so the UI doesn't flicker/reflow
@@ -548,6 +549,20 @@ export default function Dashboard() {
         : 'amber'
 
   const stabilityToneCls = toneClasses(stabilityBadge.tone)
+
+  // --- coarser-timeframe lead/lag (#2) + decoupling watch (#3) + streak (#4) ---
+  const llFrame = prediction?.lead_lag_tf?.[leadTf]
+  const llReady = llFrame?.status === 'ok'
+  // only a STREAK-CONFIRMED lead is reported as the leader (kills one-off noise)
+  const llLeader = llFrame?.confirmed_leader ?? null
+  const llStreak = llFrame?.streak ?? null
+  const llStreakMax = 3
+  const llTarget = llFrame?.target ?? prediction?.target ?? 'QQQ'
+  const llDecoupled = llFrame?.decoupled ?? []
+  const llIsDaily = (llFrame?.bar_minutes ?? 0) >= 1440
+  // format a lag: days for the daily frame, minutes otherwise
+  const fmtLag = (lagMin: number) =>
+    llIsDaily ? `${Math.round(lagMin / 1440)}d` : `${lagMin}m`
 
   return (
     <div className="space-y-4">
@@ -766,7 +781,8 @@ export default function Dashboard() {
                           : 'bg-slate-700/40 text-slate-300'
                     }`}
                   >
-                    {aiChangePts >= 0 ? '▲' : '▼'} {Math.abs(aiChangePts)} pts over {aiPeriodLabel}
+                    {aiChangePts >= 0 ? '▲' : '▼'} {Math.abs(aiChangePts)} pts (
+                    {Math.round(aiBaseVal * 100)}%) over {aiPeriodLabel}
                   </span>
                   {aiAtHigh && (
                     <span className="mb-1.5 inline-flex items-center gap-1 rounded-full bg-fuchsia-500/15 px-2 py-0.5 text-xs font-semibold text-fuchsia-200">
@@ -891,20 +907,74 @@ export default function Dashboard() {
           {/* lead-lag — full-width hero */}
           <div className="lg:col-span-2">
             <Card className="p-6">
-              <LabeledSection label="Lead / lag detection" tip={TIPS.leadLagDetect} align="left" />
-              {prediction?.status === 'ok' && prediction.lead_lag.leader ? (
+              <div className="flex items-start justify-between gap-3">
+                <LabeledSection label="Lead / lag detection" tip={TIPS.leadLagDetect} align="left" />
+                {/* timeframe toggle — 15m default (calmer), 5m faster but noisier */}
+                <div className="flex items-center gap-1 rounded-full border border-slate-800 bg-slate-950/60 p-0.5">
+                  {(['5min', '15min', 'daily'] as const).map((tf) => (
+                    <button
+                      key={tf}
+                      onClick={() => setLeadTf(tf)}
+                      className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                        leadTf === tf
+                          ? 'bg-cyan-500/15 text-cyan-200'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {tf === '15min' ? '15m' : tf === '5min' ? '5m' : 'Daily'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {leadTf === '5min' && (
+                <p className="mt-1.5 text-[0.7rem] text-amber-300/80">
+                  5-min frame reacts faster but is noisier — more false leads. 15m is steadier.
+                </p>
+              )}
+              {leadTf === 'daily' && (
+                <p className="mt-1.5 text-[0.7rem] text-slate-500">
+                  Cross-day: measured over ~1 year of daily bars — where a multi-day lead would
+                  show up if one exists.
+                </p>
+              )}
+              {llReady && llLeader ? (
                 <h3 className="mt-3 text-xl font-semibold text-white">
-                  {leadLag.leader} <span className="text-slate-400">leads</span> {leadLag.lagger}{' '}
-                  <span className="text-slate-400">by</span> {leadLag.leadMinutes}m
+                  {llLeader.symbol} <span className="text-slate-400">leads</span> {llTarget}{' '}
+                  <span className="text-slate-400">by</span> {fmtLag(llLeader.lag_minutes)}
+                  <span className="ml-2 rounded-full bg-cyan-500/15 px-2 py-0.5 text-[0.65rem] font-semibold text-cyan-200">
+                    {llIsDaily ? 'cross-day' : `confirmed ×${llStreak?.count ?? llStreakMax}`}
+                  </span>
+                </h3>
+              ) : llReady && llStreak && llStreak.symbol && llStreak.count > 0 ? (
+                <h3 className="mt-3 text-xl font-semibold text-slate-300">
+                  Possible lead: {llStreak.symbol}{' '}
+                  <span className="text-sm font-medium text-amber-300/90">
+                    confirming {llStreak.count}/{llStreakMax}…
+                  </span>
                 </h3>
               ) : (
                 <h3 className="mt-3 text-xl font-semibold text-slate-300">
-                  {prediction?.status === 'ok' ? 'No clear leader' : 'Warming up'}
+                  {llReady ? 'No repeating lead — sectors moving together' : 'Warming up'}
                 </h3>
+              )}
+              {/* decoupling watch — a usual driver that broke ranks now */}
+              {llDecoupled.length > 0 && (
+                <p className="mt-2 text-xs leading-5 text-amber-300">
+                  ⚠ Broke ranks:{' '}
+                  {llDecoupled
+                    .slice(0, 3)
+                    .map(
+                      (d) =>
+                        `${d.symbol} (usually ${Math.round(d.usual_corr * 100)}% → now ${Math.round(
+                          d.now_corr * 100,
+                        )}%)`,
+                    )
+                    .join(', ')}
+                </p>
               )}
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs font-medium text-cyan-300">
-                  Confidence: {leadLag.confidence}
+                  {llLeader ? `Coupling: ${Math.round(llLeader.corr * 100)}%` : `Frame: ${leadTf === '15min' ? '15-min' : '5-min'}`}
                 </span>
                 {/* cross-session stability badge (#2) */}
                 <span
@@ -978,16 +1048,7 @@ export default function Dashboard() {
                 )}
               </div>
 
-              <ul className="mt-4 space-y-2">
-                {leadLag.details.map((detail) => (
-                  <li key={detail} className="flex gap-2 text-sm text-slate-300">
-                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400" />
-                    <span>{detail}</span>
-                  </li>
-                ))}
-              </ul>
-
-              {prediction?.status === 'ok' && prediction.lead_lag.entries.length > 0 && (
+              {llReady && (llFrame?.entries.length ?? 0) > 0 && (
                 <>
                 <div className="mt-4 overflow-hidden rounded-xl border border-slate-800">
                   <table className="w-full text-left text-xs">
@@ -995,12 +1056,14 @@ export default function Dashboard() {
                       <tr>
                         <th className="px-3 py-2 font-medium">Symbol</th>
                         <th className="px-3 py-2 font-medium">Role</th>
-                        <th className="px-3 py-2 text-right font-medium">Lead (min)</th>
+                        <th className="px-3 py-2 text-right font-medium">
+                          Lead ({llIsDaily ? 'days' : 'min'})
+                        </th>
                         <th className="px-3 py-2 text-right font-medium">Corr</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {prediction.lead_lag.entries.slice(0, 6).map((entry) => {
+                      {llFrame!.entries.slice(0, 6).map((entry) => {
                         const roleTone =
                           entry.role === 'leader'
                             ? 'text-cyan-300'
@@ -1016,7 +1079,7 @@ export default function Dashboard() {
                             </td>
                             <td className={`px-3 py-2 capitalize ${roleTone}`}>{entry.role}</td>
                             <td className="px-3 py-2 text-right text-slate-300">
-                              {entry.best_lag}m
+                              {fmtLag(entry.lag_minutes ?? entry.best_lag * (llFrame?.bar_minutes ?? 1))}
                             </td>
                             <td className="px-3 py-2 text-right text-slate-300">
                               {entry.best_corr.toFixed(2)}

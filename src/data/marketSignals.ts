@@ -64,10 +64,26 @@ export type LeadLagSignal = {
 export type LeadLagEntry = {
   symbol: string
   best_lag: number
+  lag_minutes?: number
   best_corr: number
   corr_at_zero: number
   beta: number
   role: 'leader' | 'confirmer' | 'diverging' | 'weak'
+}
+
+/** Lead/lag recomputed at a coarser frame (5m/15m) + decoupling watch. */
+export type LeadLagFrame = {
+  status: string
+  bars_used: number
+  bar_minutes: number
+  target: string
+  entries: LeadLagEntry[]
+  leader: { symbol: string; lag_minutes: number; corr: number; beta: number } | null
+  confirmers: string[]
+  diverging: string[]
+  decoupled: { symbol: string; usual_corr: number; now_corr: number; drop: number }[]
+  streak?: { symbol: string | null; lag_minutes: number; count: number; confirmed: boolean }
+  confirmed_leader?: { symbol: string; lag_minutes: number; corr: number; beta: number } | null
 }
 
 export type PredictionPayload = {
@@ -85,6 +101,7 @@ export type PredictionPayload = {
     confirmers: string[]
     diverging: string[]
   }
+  lead_lag_tf?: Record<string, LeadLagFrame>
   score: {
     status: string
     verdict: 'continue' | 'stall' | 'fragile' | 'warming_up'
