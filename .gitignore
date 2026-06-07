@@ -10,3 +10,8 @@ notes.txt
 
 # Internal design/requirements docs — not for the public repo
 doc/
+
+# lead-persistence runner artifacts (never commit)
+backend/conf/
+backend/lead_runner.db
+backend/webull_data_sdk.log
