@@ -392,11 +392,13 @@ def record_signal(con, run_id, cfg: Config, r: dict):
 # --------------------------------------------------------------------------- #
 def score_outcomes(con, run_id, qqq_series: pd.Series, horizon_s: int,
                    eps: float = 0.0003):
-    """For each WATCH signal old enough to evaluate, look at QQQ's forward move
-    over `horizon_s` and label hit (QQQ continued in the predicted direction)."""
+    """For EVERY bar old enough to evaluate (watch or not), label hit = QQQ
+    continued in the predicted direction over `horizon_s`. Scoring all bars (not
+    only WATCH ones) yields the BASELINE: how often QQQ follows the leader anyway,
+    so we can tell whether the WATCH gate adds anything."""
     rows = con.execute(
         """SELECT id, ts, leader_dir, qqq_price FROM signals
-           WHERE run_id=? AND evaluated=0 AND watch=1""", (run_id,)).fetchall()
+           WHERE run_id=? AND evaluated=0""", (run_id,)).fetchall()
     if qqq_series.empty:
         return
     last_ts = qqq_series.index[-1]
@@ -420,7 +422,7 @@ def leaderboard(con, run_id=None, since: Optional[pd.Timestamp] = None,
     """Config performance from evaluated WATCH signals. `since` restricts to a
     recent rolling window (the recency-weighting that lets the runner keep
     re-adjusting intraday instead of anchoring on the whole session)."""
-    where = "WHERE evaluated=1 AND watch=1"
+    where = "WHERE evaluated=1"
     params: list = []
     if run_id is not None:
         where += " AND run_id=?"
@@ -428,14 +430,17 @@ def leaderboard(con, run_id=None, since: Optional[pd.Timestamp] = None,
     if since is not None:
         where += " AND ts >= ?"
         params.append(since.isoformat())
+    # n / precision / edge are WATCH-only (via CASE); baseline is over ALL bars.
     df = pd.read_sql_query(
         f"""SELECT config_key, bar_seconds, watch_thr,
-                   COUNT(*) AS n, SUM(hit) AS hits, AVG(hit) AS precision,
-                   AVG(fwd_return*leader_dir) AS mean_edge
+                   SUM(watch) AS n,
+                   AVG(CASE WHEN watch=1 THEN hit END) AS precision,
+                   AVG(hit) AS baseline,
+                   AVG(CASE WHEN watch=1 THEN fwd_return*leader_dir END) AS mean_edge
             FROM signals {where}
             GROUP BY config_key
             HAVING n >= {int(min_n)}
-            ORDER BY precision DESC, n DESC""",
+            ORDER BY (precision - baseline) DESC, n DESC""",
         con, params=tuple(params))
     return df
 
@@ -460,6 +465,7 @@ def run_live(feed: QuoteFeed, *, feed_name: str, horizon_s: int,
     qqq_hist: List[Tuple[pd.Timestamp, float]] = []
     last_bar_seen: Dict[int, pd.Timestamp] = {}
     last_eval_ts: Optional[pd.Timestamp] = None
+    prev_gap: Dict[str, float] = {}   # last gap per config -> trend arrow
     is_replay = isinstance(feed, ReplayFeed)
     print(f"[run {run_id}] feed={feed_name} bar_sizes={sorted(by_bar)} "
           f"configs={len(grid)} horizon={horizon_s}s db={DB_PATH.name}")
@@ -516,10 +522,33 @@ def run_live(feed: QuoteFeed, *, feed_name: str, horizon_s: int,
                     (run_id, ts_now.isoformat(), best["config_key"],
                      float(best["precision"]), int(best["n"]), learn_window_min))
                 con.commit()
-                print(f"[{ts_now:%H:%M:%S}] ACTIVE={best['config_key']} "
-                      f"prec_{learn_window_min}m={best['precision']:.0%} "
-                      f"n={int(best['n'])} edge={best['mean_edge']*1e4:+.1f}bp "
-                      f"(candidates={len(roll)})")
+                # latest read of the active config: who's leading, lead time, corr
+                lr = con.execute(
+                    """SELECT leader, lag_bars, bar_seconds, mean_corr0 FROM signals
+                       WHERE run_id=? AND config_key=? ORDER BY ts DESC LIMIT 1""",
+                    (run_id, best["config_key"])).fetchone()
+                if lr and lr[1] and lr[1] >= 1:
+                    lead_str = f"{lr[0]}→{TARGET} ~{int(lr[1]*lr[2])}s | corr {lr[3]*100:.0f}%"
+                else:
+                    lead_str = "no current lead"
+                key = best["config_key"]
+                prec, base = best["precision"], best["baseline"]
+                prec_s = f"{prec*100:.0f}%" if prec == prec else "—"
+                base_s = f"{base*100:.0f}%" if base == base else "—"
+                if prec == prec and base == base:
+                    gap_val = (prec - base) * 100
+                    pv = prev_gap.get(key)          # this config's previous gap
+                    if pv is None:                  arrow = "■"               # new
+                    elif gap_val > pv + 1.0:        arrow = "\033[32m▲\033[0m"  # widening
+                    elif gap_val < pv - 1.0:        arrow = "\033[31m▼\033[0m"  # shrinking
+                    else:                           arrow = "■"               # flat
+                    prev_gap[key] = gap_val
+                    gap = f"{gap_val:+.0f}pts {arrow}"
+                else:
+                    gap = "—"
+                print(f"[{ts_now:%H:%M:%S}] ACTIVE {best['config_key']} | {lead_str} | "
+                      f"hit {prec_s} vs base {base_s} ({gap}) n={int(best['n'])} | "
+                      f"edge {best['mean_edge']*1e4:+.1f}bp")
             last_eval_ts = ts_now
 
         if is_replay and feed.done:
@@ -558,7 +587,24 @@ def main():
                    help="rolling window the active config is promoted from (recency)")
     p.add_argument("--report", action="store_true", help="print all-run leaderboard and exit")
     p.add_argument("--fast", action="store_true", help="small single-bar grid for quick replay smoke test")
+    p.add_argument("--target", default=None,
+                   help="prediction target symbol (default QQQ)")
+    p.add_argument("--leaders", default=None,
+                   help="comma-separated candidate leaders, e.g. XLK,SMH,IGV,XLY (default SMH,XLK). "
+                        "Live (webull/yahoo) only; the replay simulator is fixed to QQQ/SMH/XLK.")
     args = p.parse_args()
+
+    # CLI override of the hardcoded target/leaders -> propagate to BOTH modules
+    # (detector globals live in tick_lead_persistence; feed/runner globals here).
+    if args.target or args.leaders:
+        import tick_lead_persistence as tlp
+        tgt = (args.target or TARGET).upper()
+        lds = ([x.strip().upper() for x in args.leaders.split(",") if x.strip()]
+               if args.leaders else list(LEADERS))
+        globals()["TARGET"], globals()["LEADERS"] = tgt, lds
+        tlp.TARGET, tlp.LEADERS = tgt, lds
+        QuoteFeed.symbols = [tgt] + lds
+        print(f"tracking target={tgt} leaders={lds}")
 
     if args.report:
         con = db_connect()
