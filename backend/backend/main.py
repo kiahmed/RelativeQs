@@ -42,6 +42,11 @@ origins = [
     "http://localhost:4173",
     "http://127.0.0.1:4173",
 ]
+# Production origins (the deployed Vercel site, preview deploys, etc.) come from
+# CORS_ORIGINS as a comma-separated list, e.g.
+# CORS_ORIGINS="https://relativeqs.vercel.app,https://relativeqs.com"
+_extra_origins = os.getenv("CORS_ORIGINS", "")
+origins += [o.strip() for o in _extra_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -71,11 +76,48 @@ async def shutdown_event():
         task.cancel()
 
 
+def _market_closed_et(now_utc):
+    """True on a weekday after the 16:00 ET close — when the settled after-hours
+    rotation backtest can be finalized. (Holidays simply won't produce fresh
+    bars; the finalize is idempotent per date so a no-op write is harmless.)"""
+    from datetime import time as dtime
+    from zoneinfo import ZoneInfo
+    et = now_utc.astimezone(ZoneInfo("America/New_York"))
+    return et.weekday() < 5 and et.time() >= dtime(16, 0)
+
+
+async def _finalize_rotation_backtest(market, store, et_date):
+    """Settle the day's rotation read once: final 1m intraday + coarse daily read
+    + their agreement score, persisted under the calendar date."""
+    from app.services.rotation_store import compute_agreement
+    intraday_final = await market.fetch_rotation(use_cache=False, session="final")
+    daily_read = await market.fetch_rotation_daily()
+    agreement = compute_agreement(intraday_final, daily_read)
+    await asyncio.to_thread(
+        store.write, et_date, intraday_final, daily_read, agreement
+    )
+    logger.info("[ROTATION] finalized backtest for %s (agreement=%.3f)",
+                et_date, agreement)
+
+
+# background task handle for the de-duplicated pre-market board pre-warm
+_premkt_task = None
+
+
 async def _poll_and_broadcast():
-    from app.services.cache import RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY, PREDICTION_KEY
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    from app.services.cache import (
+        RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY, PREDICTION_KEY, ROTATION_KEY,
+    )
     from app.services.history_store import IntradayHistoryStore
+    from app.services.rotation_store import RotationStore
 
     cache = RedisCache()
+    rotation_store = RotationStore()
+    # Guard so the after-hours finalize writes at most once per calendar date
+    # per process (the loop keeps spinning every poll interval after the close).
+    finalized_date = None
     # One history store for the loop's lifetime: it accumulates 1m bars across
     # cycles so the lead/lag engine sees the whole session, not just one fetch.
     history_store = IntradayHistoryStore(cache=cache)
@@ -104,6 +146,19 @@ async def _poll_and_broadcast():
             # Intraday prediction: accumulate session bars in the history store
             # and run the lead/lag, score, and projection engines.
             prediction = await market.fetch_prediction(history_store=history_store)
+
+            # Cross-sector rotation flow (cached ~one poll interval inside the
+            # service, so this is cheap and won't re-hit yfinance every cycle).
+            rotation = await market.fetch_rotation(use_cache=False, session="live")
+
+            # Pre-warm the overnight/pre-market board OFF the critical path — its
+            # ~100-ticker pull is slow (~40s cold) but only runs once every
+            # PREMARKET_REFRESH_SECONDS thanks to its in-process cache. Fire it as
+            # a background task (de-duplicated) so the API always serves it warm
+            # and the prediction poll never stalls on it.
+            global _premkt_task
+            if _premkt_task is None or _premkt_task.done():
+                _premkt_task = asyncio.create_task(market.fetch_premarket_board())
             # Backfill the legacy qqq_score fields the existing UI reads, so the
             # measured lead/lag and composite signal show up without a schema break.
             try:
@@ -117,10 +172,24 @@ async def _poll_and_broadcast():
             await cache.set(SNAPSHOT_KEY, snapshot, expire=cache_ttl)
             await cache.set(QQQ_SCORE_KEY, qqq_score, expire=cache_ttl)
             await cache.set(PREDICTION_KEY, prediction, expire=cache_ttl)
+            await cache.set(ROTATION_KEY, rotation, expire=cache_ttl)
             # broadcast to websocket clients
             await ws_manager.broadcast({"type": "snapshot", "payload": snapshot})
             await ws_manager.broadcast({"type": "qqq_score", "payload": qqq_score})
             await ws_manager.broadcast({"type": "prediction", "payload": prediction})
+            await ws_manager.broadcast({"type": "rotation", "payload": rotation})
+
+            # After-hours: settle the day's rotation backtest exactly once.
+            now_utc = datetime.now(timezone.utc)
+            et_date = now_utc.astimezone(
+                ZoneInfo("America/New_York")
+            ).strftime("%Y-%m-%d")
+            if _market_closed_et(now_utc) and finalized_date != et_date:
+                try:
+                    await _finalize_rotation_backtest(market, rotation_store, et_date)
+                    finalized_date = et_date
+                except Exception:
+                    logger.exception("[ROTATION] finalize failed for %s", et_date)
 
             elapsed = time.monotonic() - started
             logger.info(

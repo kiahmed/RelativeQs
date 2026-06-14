@@ -3,7 +3,8 @@ import os
 import logging
 from typing import Optional
 from app.services.market_data import MarketDataService
-from app.services.cache import RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY, PREDICTION_KEY
+from app.services.cache import RedisCache, SNAPSHOT_KEY, QQQ_SCORE_KEY, PREDICTION_KEY, ROTATION_KEY
+from app.services.rotation_store import RotationStore
 from app.core.score_engine import ScoreEngine
 from app.config import settings
 from app import auth, supabase_admin, alerts
@@ -15,6 +16,7 @@ provider_mode = settings.DATA_PROVIDER or os.getenv("DATA_PROVIDER", "mock")
 market = MarketDataService(mode=provider_mode)
 engine = ScoreEngine()
 cache = RedisCache()
+rotation_store = RotationStore()
 
 @router.get("/health")
 async def health():
@@ -65,6 +67,36 @@ async def prediction():
     pred = await market.fetch_prediction()
     logger.info("[API] Prediction computed (status=%s)", pred.get("status"))
     return pred
+
+
+@router.get("/rotation")
+async def rotation():
+    """Cross-sector rotation flow (1m). Served from the Redis cache the poll loop
+    keeps fresh; computed on demand only when the cache is cold."""
+    logger.info("[API] GET /rotation")
+    cached = await cache.get(ROTATION_KEY)
+    if cached:
+        logger.info("[API] Rotation served from Redis (session=%s)", cached.get("session"))
+        return cached
+    logger.info("[API] Rotation cache miss — computing on demand")
+    return await market.fetch_rotation()
+
+
+@router.get("/rotation/history")
+async def rotation_history(limit: Optional[int] = 30):
+    """Persisted daily rotation backtests (intraday-final vs daily-read agreement)."""
+    logger.info("[API] GET /rotation/history limit=%s", limit)
+    return {"history": rotation_store.history(limit=limit or 30)}
+
+
+@router.get("/premarket")
+async def premarket():
+    """Overnight / pre-market board — the day's biggest Nasdaq-100 movers, the
+    overnight tape (US futures, Asia semis, Europe), and how each mover sits
+    vs the tape and the crowd. Descriptive pre-open context; never feeds scoring.
+    Served from the service's own ~15-min in-process cache."""
+    logger.info("[API] GET /premarket")
+    return await market.fetch_premarket_board()
 
 
 @router.get("/ai-dependency")

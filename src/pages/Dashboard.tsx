@@ -14,10 +14,11 @@ import {
 } from 'recharts'
 import { useAuthStore } from '../store/useAuthStore'
 import { useMarketStore } from '../store/useMarketStore'
-import { deriveStabilityBadge, deriveHitRate } from '../data/marketSignals'
 import { BACKEND_URL, POLL_INTERVAL_MS } from '../config'
 import ProGate from '../components/ProGate'
 import AlertToggle from '../components/AlertToggle'
+import RotationFlow from '../components/RotationFlow'
+import PreMarketRibbon from '../components/PreMarketRibbon'
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -108,12 +109,6 @@ function CardLegend({ items, note }: { items: { label: string; cls: string }[]; 
   )
 }
 
-const ROLE_LEGEND = [
-  { label: 'Leader', cls: 'bg-cyan-400' },
-  { label: 'Confirmer', cls: 'bg-emerald-400' },
-  { label: 'Diverging', cls: 'bg-rose-400' },
-  { label: 'Weak', cls: 'bg-slate-500' },
-]
 const VERDICT_LEGEND = [
   { label: 'Continue', cls: 'bg-emerald-400' },
   { label: 'Stall', cls: 'bg-amber-400' },
@@ -324,22 +319,19 @@ export default function Dashboard() {
     rollingCorrelation,
     qqqHealth,
     prediction,
+    rotation,
     loading,
+    lastUpdated,
     refresh,
     startRealtime,
     stopRealtime,
   } = useMarketStore()
 
   const [exporting, setExporting] = useState(false)
-  // hit-rate horizon UI (component-local, not store). null = Auto (default).
-  const [hitRateAuto, setHitRateAuto] = useState(true)
-  const [hitRateHorizon, setHitRateHorizon] = useState<number | null>(null)
   // AI-dependency lookback window (by server-provided key, e.g. '1M'). Drives the
   // baseline comparison + the bottleneck ranking over that window. The headline %
   // (current dependency) stays stable; only the comparison and ranking re-window.
   const [aiWinKey, setAiWinKey] = useState<string>('1M')
-  // lead/lag timeframe — 15m default (calmer); 5m faster/noisier; daily = cross-day.
-  const [leadTf, setLeadTf] = useState<'5min' | '15min' | 'daily'>('15min')
 
   useEffect(() => {
     // background poll is silent (no loading flag) so the UI doesn't flicker/reflow
@@ -499,11 +491,6 @@ export default function Dashboard() {
   const corrRegime = prediction?.correlation_regime ?? null
   const corrRegimeReady = corrRegime?.status === 'ok'
 
-  const stabilityBadge = deriveStabilityBadge(prediction)
-  const hitRateView = deriveHitRate(prediction, {
-    horizon: hitRateAuto ? null : hitRateHorizon,
-  })
-
   const corrBars = bucket4hCorr(rollingCorrelation)
 
   // signal-universe tiles: tracked ETFs ranked by real 30-min momentum (top 8)
@@ -548,29 +535,32 @@ export default function Dashboard() {
         ? 'rose'
         : 'amber'
 
-  const stabilityToneCls = toneClasses(stabilityBadge.tone)
-
-  // --- coarser-timeframe lead/lag (#2) + decoupling watch (#3) + streak (#4) ---
-  const llFrame = prediction?.lead_lag_tf?.[leadTf]
-  const llReady = llFrame?.status === 'ok'
-  // only a STREAK-CONFIRMED lead is reported as the leader (kills one-off noise)
-  const llLeader = llFrame?.confirmed_leader ?? null
-  const llStreak = llFrame?.streak ?? null
-  const llStreakMax = 3
-  const llTarget = llFrame?.target ?? prediction?.target ?? 'QQQ'
-  const llDecoupled = llFrame?.decoupled ?? []
-  const llIsDaily = (llFrame?.bar_minutes ?? 0) >= 1440
-  // format a lag: days for the daily frame, minutes otherwise
-  const fmtLag = (lagMin: number) =>
-    llIsDaily ? `${Math.round(lagMin / 1440)}d` : `${lagMin}m`
-
   return (
     <div className="space-y-4">
+      {/* Overnight / pre-market board — visible pre-open, auto-collapses ~10am ET */}
+      <PreMarketRibbon />
+
       {/* ---------------------------------------------------------- */}
       {/* QQQ intraday projection — measured lead/lag + composite      */}
       {/* ---------------------------------------------------------- */}
       <Card className="relative overflow-hidden p-5 sm:p-6">
         <div className="pointer-events-none absolute -left-16 -top-16 h-48 w-48 rounded-full bg-indigo-500/10 blur-3xl" />
+        {/* last data refresh — absolutely positioned so it never shifts the card height */}
+        {lastUpdated != null && (
+          <span
+            className="pointer-events-none absolute right-4 top-4 z-10 text-right text-[0.65rem] font-medium leading-tight text-slate-500"
+            title={`Last data refresh: ${new Date(lastUpdated).toLocaleString()}`}
+          >
+            <span className="hidden sm:inline text-slate-600">Updated </span>
+            {new Date(lastUpdated).toLocaleString(undefined, {
+              month: 'short',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}
+          </span>
+        )}
         <div className="relative flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -904,205 +894,9 @@ export default function Dashboard() {
       {/* ---------------------------------------------------------- */}
       <ProGate label="Sector analytics">
       <div className="grid gap-6 lg:grid-cols-2">
-          {/* lead-lag — full-width hero */}
+          {/* rotation flow — full-width row (replaces coarse lead/lag) */}
           <div className="lg:col-span-2">
-            <Card className="p-6">
-              <div className="flex items-start justify-between gap-3">
-                <LabeledSection label="Lead / lag detection" tip={TIPS.leadLagDetect} align="left" />
-                {/* timeframe toggle — 15m default (calmer), 5m faster but noisier */}
-                <div className="flex items-center gap-1 rounded-full border border-slate-800 bg-slate-950/60 p-0.5">
-                  {(['5min', '15min', 'daily'] as const).map((tf) => (
-                    <button
-                      key={tf}
-                      onClick={() => setLeadTf(tf)}
-                      className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
-                        leadTf === tf
-                          ? 'bg-cyan-500/15 text-cyan-200'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {tf === '15min' ? '15m' : tf === '5min' ? '5m' : 'Daily'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {leadTf === '5min' && (
-                <p className="mt-1.5 text-[0.7rem] text-amber-300/80">
-                  5-min frame reacts faster but is noisier — more false leads. 15m is steadier.
-                </p>
-              )}
-              {leadTf === 'daily' && (
-                <p className="mt-1.5 text-[0.7rem] text-slate-500">
-                  Cross-day: measured over ~1 year of daily bars — where a multi-day lead would
-                  show up if one exists.
-                </p>
-              )}
-              {llReady && llLeader ? (
-                <h3 className="mt-3 text-xl font-semibold text-white">
-                  {llLeader.symbol} <span className="text-slate-400">leads</span> {llTarget}{' '}
-                  <span className="text-slate-400">by</span> {fmtLag(llLeader.lag_minutes)}
-                  <span className="ml-2 rounded-full bg-cyan-500/15 px-2 py-0.5 text-[0.65rem] font-semibold text-cyan-200">
-                    {llIsDaily ? 'cross-day' : `confirmed ×${llStreak?.count ?? llStreakMax}`}
-                  </span>
-                </h3>
-              ) : llReady && llStreak && llStreak.symbol && llStreak.count > 0 ? (
-                <h3 className="mt-3 text-xl font-semibold text-slate-300">
-                  Possible lead: {llStreak.symbol}{' '}
-                  <span className="text-sm font-medium text-amber-300/90">
-                    confirming {llStreak.count}/{llStreakMax}…
-                  </span>
-                </h3>
-              ) : (
-                <h3 className="mt-3 text-xl font-semibold text-slate-300">
-                  {llReady ? 'No repeating lead — sectors moving together' : 'Warming up'}
-                </h3>
-              )}
-              {/* decoupling watch — a usual driver that broke ranks now */}
-              {llDecoupled.length > 0 && (
-                <p className="mt-2 text-xs leading-5 text-amber-300">
-                  ⚠ Broke ranks:{' '}
-                  {llDecoupled
-                    .slice(0, 3)
-                    .map(
-                      (d) =>
-                        `${d.symbol} (usually ${Math.round(d.usual_corr * 100)}% → now ${Math.round(
-                          d.now_corr * 100,
-                        )}%)`,
-                    )
-                    .join(', ')}
-                </p>
-              )}
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs font-medium text-cyan-300">
-                  {llLeader ? `Coupling: ${Math.round(llLeader.corr * 100)}%` : `Frame: ${leadTf === '15min' ? '15-min' : '5-min'}`}
-                </span>
-                {/* cross-session stability badge (#2) */}
-                <span
-                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${stabilityToneCls.chip}`}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${stabilityToneCls.dot}`} />
-                  Stability: {stabilityBadge.label}
-                  <InfoTip text={TIPS.stability} align="left" />
-                </span>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-slate-400">{stabilityBadge.message}</p>
-
-              {/* hit-rate / continuation probability (#4) — horizon Auto toggle */}
-              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-cyan-300/80">
-                    Hit rate
-                    <InfoTip text={TIPS.hitRate} align="left" />
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (hitRateAuto) {
-                          // turning Auto OFF -> always have a concrete horizon selected
-                          // (default to the first option, 5m) so it evaluates a real window
-                          setHitRateHorizon((h) => h ?? hitRateView.horizonOptions[0] ?? 5)
-                          setHitRateAuto(false)
-                        } else {
-                          setHitRateAuto(true)
-                        }
-                      }}
-                      className={`rounded-full px-2.5 py-1 text-[0.7rem] font-semibold transition ${
-                        hitRateAuto
-                          ? 'bg-cyan-500/15 text-cyan-300'
-                          : 'border border-slate-700 text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Auto{hitRateAuto && hitRateView.ready ? ` · ~${hitRateView.horizonMinutes}m` : ''}
-                    </button>
-                    {!hitRateAuto && (
-                      <select
-                        value={hitRateHorizon ?? hitRateView.horizonOptions[0] ?? 5}
-                        onChange={(e) => setHitRateHorizon(Number(e.target.value))}
-                        className="rounded-full border border-slate-700 bg-slate-950 px-2.5 py-1 text-[0.7rem] font-semibold text-slate-200 focus:border-cyan-500/50 focus:outline-none"
-                      >
-                        {hitRateView.horizonOptions.map((h) => (
-                          <option key={h} value={h}>
-                            {h}m
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                </div>
-                {hitRateView.ready ? (
-                  <>
-                    <div className="mt-2 flex items-baseline gap-2">
-                      <span
-                        className={`text-2xl font-semibold ${
-                          hitRateView.edge > 0 ? 'text-emerald-400' : 'text-slate-300'
-                        }`}
-                      >
-                        {hitRateView.hitRatePct}%
-                      </span>
-                      <span className="text-xs text-slate-400">{hitRateView.line}</span>
-                    </div>
-                  </>
-                ) : (
-                  <p className="mt-2 text-xs text-slate-400">{hitRateView.line}</p>
-                )}
-              </div>
-
-              {llReady && (llFrame?.entries.length ?? 0) > 0 && (
-                <>
-                <div className="mt-4 overflow-hidden rounded-xl border border-slate-800">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-950/60 text-slate-400">
-                      <tr>
-                        <th className="px-3 py-2 font-medium">Symbol</th>
-                        <th className="px-3 py-2 font-medium">Role</th>
-                        <th className="px-3 py-2 text-right font-medium">
-                          Lead ({llIsDaily ? 'days' : 'min'})
-                        </th>
-                        <th className="px-3 py-2 text-right font-medium">Corr</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {llFrame!.entries.slice(0, 6).map((entry) => {
-                        const roleTone =
-                          entry.role === 'leader'
-                            ? 'text-cyan-300'
-                            : entry.role === 'confirmer'
-                              ? 'text-emerald-300'
-                              : entry.role === 'diverging'
-                                ? 'text-rose-300'
-                                : 'text-slate-400'
-                        return (
-                          <tr key={entry.symbol} className="border-t border-slate-800/80">
-                            <td className="px-3 py-2 font-semibold text-slate-200">
-                              {entry.symbol}
-                            </td>
-                            <td className={`px-3 py-2 capitalize ${roleTone}`}>{entry.role}</td>
-                            <td className="px-3 py-2 text-right text-slate-300">
-                              {fmtLag(entry.lag_minutes ?? entry.best_lag * (llFrame?.bar_minutes ?? 1))}
-                            </td>
-                            <td className="px-3 py-2 text-right text-slate-300">
-                              {entry.best_corr.toFixed(2)}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <CardLegend
-                  items={ROLE_LEGEND}
-                  note="Lead = min ahead of QQQ · 0 = coincident"
-                />
-                </>
-              )}
-
-              {prediction?.status !== 'ok' && (
-                <p className="mt-4 text-xs text-slate-400">
-                  {barsCollected} bar{barsCollected === 1 ? '' : 's'} collected this session.
-                </p>
-              )}
-            </Card>
+            <RotationFlow rotation={rotation} />
           </div>
 
           {/* Confirmation gate (#3) — the pre-trade card */}

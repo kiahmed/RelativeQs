@@ -17,6 +17,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 SNAPSHOT_KEY = "snapshot:latest"
 QQQ_SCORE_KEY = "qqq_score:latest"
 PREDICTION_KEY = "prediction:latest"
+ROTATION_KEY = "rotation:latest"
 
 
 def _json_encoder(obj):

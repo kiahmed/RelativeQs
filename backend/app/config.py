@@ -241,5 +241,20 @@ class Settings:
 
     AI_DEPENDENCY_BASKET: List[dict] = _ai_basket()
 
+    # --- Overnight / pre-market board (descriptive pre-open context) ---
+    PREMARKET_ENABLED: bool = os.getenv("PREMARKET_ENABLED", "true").lower() == "true"
+    # how many top movers to surface, and the floor below which a gap is noise
+    PREMARKET_TOP_N: int = _env_int("PREMARKET_TOP_N", 8)
+    PREMARKET_MIN_GAP: float = _env_float("PREMARKET_MIN_GAP", 0.01)
+    # refresh cadence (seconds) — pre-open context, ~15 min is plenty
+    PREMARKET_REFRESH_SECONDS: int = _env_int("PREMARKET_REFRESH_SECONDS", 900)
+    # overnight tape baskets (closed before the US open): Asia semis + Europe tech
+    PREMARKET_ASIA_BASKET: List[str] = (
+        os.getenv("PREMARKET_ASIA_BASKET", "2330.TW,005930.KS,000660.KS,8035.T,6857.T").split(","))
+    PREMARKET_EUROPE: List[str] = os.getenv("PREMARKET_EUROPE", "ASML.AS").split(",")
+    # dev/testing: when true the ribbon never auto-collapses off-hours (always
+    # shows the full board regardless of market phase). Leave false in prod.
+    PREMARKET_FORCE_OPEN: bool = os.getenv("PREMARKET_FORCE_OPEN", "false").lower() == "true"
+
 
 settings = Settings()

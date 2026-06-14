@@ -110,7 +110,7 @@ Vite inlines these at build time. Restart `npm run dev` after editing.
 ```bash
 cd backend
 docker compose up --build -d
-docker compose logs -f rq-web-service
+docker compose logs -f relqs-web-service
 ```
 
 Verify:
@@ -163,7 +163,7 @@ the sending domain in Resend.
 
 ```bash
 # Tail backend logs
-docker compose -f backend/docker-compose.yml logs -f rq-web-service
+docker compose -f backend/docker-compose.yml logs -f relqs-web-service
 
 # Rebuild after backend code change
 docker compose -f backend/docker-compose.yml up --build -d
@@ -172,7 +172,7 @@ docker compose -f backend/docker-compose.yml up --build -d
 docker compose -f backend/docker-compose.yml down
 
 # Inspect the shared Redis from the backend container
-docker compose -f backend/docker-compose.yml exec rq-web-service \
+docker compose -f backend/docker-compose.yml exec relqs-web-service \
   python -c "import redis; r=redis.from_url('redis://postiz-redis:6379/1'); print(r.ping())"
 ```
 
@@ -188,7 +188,7 @@ docker compose -f backend/docker-compose.yml exec rq-web-service \
   doesn't match the `whsec_` printed by `stripe listen`. They rotate per
   CLI session.
 - **Frontend can't reach the backend** — check `VITE_BACKEND_URL` and
-  that `docker compose ps` shows `rq-web-service` Up on `0.0.0.0:8000`.
+  that `docker compose ps` shows `relqs-web-service` Up on `0.0.0.0:8000`.
 - **Redis key collision worries** — postiz uses DB 0, we use DB 1. To
   flush only our data: `redis-cli -h postiz-redis -n 1 FLUSHDB` (run from
   inside the backend container).

@@ -1,0 +1,29 @@
+# Keep secrets, local state, and dev cruft out of the Fly image.
+# Secrets are injected at runtime via `fly secrets set` (see deploy_to_cloud.sh),
+# never baked into the layer.
+.env
+.env.*
+!.env.example
+
+# Local databases / runner state
+*.db
+lead_runner.db
+
+# Logs
+logs/
+*.log
+
+# Python caches & virtualenvs
+__pycache__/
+*.pyc
+.pytest_cache/
+.piptest*/
+.pipcheck*/
+.venv/
+venv/
+
+# Backtest artifacts
+backtest_results.csv
+
+# OS / editor
+.DS_Store

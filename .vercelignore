@@ -1,0 +1,13 @@
+# Vercel hosts the FRONTEND ONLY. Hide everything else so the CLI doesn't
+# auto-detect the FastAPI backend (or other dirs) and turn this into a
+# multi-service deploy that wants GitHub integration.
+backend/
+supabase/
+dev-utils/
+deploy/
+doc/
+docs/
+assets/
+node_modules/
+*.db
+*.log

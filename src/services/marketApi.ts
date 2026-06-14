@@ -12,6 +12,8 @@ import {
   type QQQScore,
   type PredictionPayload,
   type AIDependency,
+  type RotationData,
+  type PremarketBoard,
 } from '../data/marketSignals'
 import { BACKEND_URL } from '../config'
 
@@ -70,6 +72,36 @@ export async function fetchAIDependency(): Promise<AIDependency | null> {
     return (await response.json()) as AIDependency
   } catch (error) {
     console.error('[Frontend] Failed to fetch AI dependency:', error)
+    return null
+  }
+}
+
+/** Overnight / pre-market board — top movers + overnight tape (pre-open context). */
+export async function fetchPremarket(): Promise<PremarketBoard | null> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/premarket`)
+    if (!response.ok) {
+      console.error('Failed to fetch premarket board:', response.statusText)
+      return null
+    }
+    return (await response.json()) as PremarketBoard
+  } catch (error) {
+    console.error('[Frontend] Failed to fetch premarket board:', error)
+    return null
+  }
+}
+
+/** Inferred intraday rotation flow across the tracked universe. */
+export async function fetchRotation(): Promise<RotationData | null> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/rotation`)
+    if (!response.ok) {
+      console.error('Failed to fetch rotation:', response.statusText)
+      return null
+    }
+    return (await response.json()) as RotationData
+  } catch (error) {
+    console.error('[Frontend] Failed to fetch rotation:', error)
     return null
   }
 }

@@ -23,11 +23,13 @@ import {
   ComparisonPoint,
   CorrelationPoint,
   PredictionPayload,
+  RotationData,
 } from '../data/marketSignals'
 import {
   fetchLiveMarketSnapshot,
   fetchLiveQQQScore,
   fetchPrediction,
+  fetchRotation,
   MarketSnapshot,
 } from '../services/marketApi'
 import { createBackendClient } from '../services/backendClient'
@@ -112,8 +114,12 @@ export type MarketState = {
   fragilityMeter: FragilityMeter
   leadLag: LeadLagSignal
   prediction: PredictionPayload | null
+  /** inferred intraday rotation flow across the tracked universe; null until first received */
+  rotation: RotationData | null
   aiConcentration: AIConcentration
   loading: boolean
+  /** epoch ms of the most recent data received from the backend (HTTP poll or WS push) */
+  lastUpdated: number | null
   /** silent=true skips the loading flag (background poll) so the UI doesn't flicker */
   refresh: (silent?: boolean) => Promise<void>
   startRealtime: (wsUrl?: string) => void
@@ -198,7 +204,9 @@ export const useMarketStore = create<MarketState>((set) => {
       lead_signal: 0,
       recent_qqq: [],
     },
+    rotation: null,
     loading: false,
+    lastUpdated: null,
     wsConnected: false,
     startRealtime: (wsUrl = WS_URL) => {
       // lazy-create client on first call
@@ -207,13 +215,13 @@ export const useMarketStore = create<MarketState>((set) => {
         anyGlobal.__pf_ws_client = createBackendClient(wsUrl)
         anyGlobal.__pf_ws_client.onSnapshot((payload: MarketSnapshot) => {
           try {
-            set((state) => ({ ...buildState(payload, state.prediction) }))
+            set((state) => ({ ...buildState(payload, state.prediction), lastUpdated: Date.now() }))
           } catch (e) {
             console.error('Failed to apply snapshot', e)
           }
         })
         anyGlobal.__pf_ws_client.onQQQScore((payload: QQQScore) => {
-          set({ qqqScore: payload })
+          set({ qqqScore: payload, lastUpdated: Date.now() })
         })
         anyGlobal.__pf_ws_client.onPrediction((payload: PredictionPayload) => {
           try {
@@ -221,10 +229,14 @@ export const useMarketStore = create<MarketState>((set) => {
               prediction: payload,
               leadLag: deriveLeadLag(payload),
               qqqHealth: deriveQQQHealth(payload, state.signals),
+              lastUpdated: Date.now(),
             }))
           } catch (e) {
             console.error('Failed to apply prediction', e)
           }
+        })
+        anyGlobal.__pf_ws_client.onRotation((payload: RotationData) => {
+          set({ rotation: payload, lastUpdated: Date.now() })
         })
         anyGlobal.__pf_ws_client.connect()
         set({ wsConnected: true })
@@ -244,7 +256,13 @@ export const useMarketStore = create<MarketState>((set) => {
         const snapshot = await fetchLiveMarketSnapshot()
         const qqqScore = await fetchLiveQQQScore()
         const prediction = await fetchPrediction()
-        set({ ...buildState({ ...snapshot, qqqScore: qqqScore ?? undefined }, prediction) })
+        const rotation = await fetchRotation()
+        set({
+          ...buildState({ ...snapshot, qqqScore: qqqScore ?? undefined }, prediction),
+          // keep the last good rotation if this fetch failed (endpoint may not exist yet)
+          ...(rotation ? { rotation } : {}),
+          lastUpdated: Date.now(),
+        })
       } finally {
         if (!silent) set({ loading: false })
       }

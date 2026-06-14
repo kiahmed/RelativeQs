@@ -45,6 +45,51 @@ of those.
 
 ---
 
+## 1a. The Overnight Board — pre‑market ribbon  🌙
+
+> *In‑app tip: "The day's biggest Nasdaq‑100 movers before the open, set against
+> the overnight tape. Descriptive context for the open — not a forecast of where
+> price goes."*
+
+A thin ribbon at the very top of the dashboard, all about **what happened
+overnight and into the pre‑market**. It's most useful before the bell and
+**auto‑collapses to a one‑line summary around 10am ET** (and on weekends), since
+by then the day is its own story. Click the collapsed line to expand it.
+
+**What you see, top to bottom:**
+
+- **The overnight tape** — `NQ` and `ES` (US futures, the direct overnight read on
+  the open), `Asia semis` (the Taiwan/Korea/Japan chip complex, closed hours
+  before our open), and `Europe` (ASML/Euro tech). Green ▲ / red ▼. Plus a
+  **breadth** figure (what % of the Nasdaq‑100 is gapping green).
+- **The open lean** *(pre‑open only)* — e.g. *"→ tech open leans UP (~60% hist.)"*.
+  This is the one forward hint, and it's deliberately modest: overnight Asia has
+  historically called the *direction of the open* about 60% of the time. It's a
+  lean, not a call, and it disappears once the bell rings.
+- **The mover chips** — the top 5–10 Nasdaq‑100 names by overnight gap, each with
+  a colored gap bar and one or two **tags** telling you *what kind* of move it is:
+
+| Tag | Meaning |
+|-----|---------|
+| **with tape** | gapping the *same* way as the overnight futures — in step with the market |
+| 🟡 **counter‑tape** | gapping *against* the futures — swimming upstream (watch it) |
+| **{sector}‑wide** | its sector peers are gapping the same way — a broad, thematic move |
+| 🟡 **lone** | moving *alone* — its sector isn't following, so it's stock‑specific (usually news) |
+| 🟡 **fading** | the pre‑market move is rolling over rather than holding |
+
+The amber tags (**counter‑tape**, **lone**, **fading**) are the "watch this" flags —
+they mark moves that aren't backed by the tape, the sector, or their own momentum.
+Example: *ARM +6%, counter‑tape · lone* = ARM is up while futures are down **and**
+while the rest of semis aren't — an idiosyncratic, news‑driven pop, not a sector tide.
+
+**Important — what it does NOT do:** it makes **no prediction** about whether a gap
+will hold or fade during the day. We tested that directly and it doesn't hold up
+(big "backed" gaps actually fade *slightly* more often). So the board is honest
+situational awareness — *what moved, with or against what* — to help you read the
+open and prepare, not a buy/sell signal. Expand the **table ↓** for the full list.
+
+---
+
 ## 2. The headline — QQQ projection
 
 > *In‑app tip: "Where QQQ may be headed over the next few minutes, with a

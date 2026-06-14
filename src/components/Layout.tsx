@@ -38,9 +38,9 @@ export default function Layout() {
                 Relative<span className="text-cyan-300">Qs</span>
               </span>
               <span className="hidden whitespace-nowrap text-[0.72rem] text-slate-300 lg:block">
-                What&apos;s driving{' '}
-                <span className="text-sm font-semibold text-white">QQQ</span> intraday —
-                leadership, breadth &amp;{' '}
+                Read{' '}
+                <span className="text-sm font-semibold text-white">QQQ</span> before the open —
+                overnight movers, leadership &amp;{' '}
                 <span className="font-medium text-fuchsia-300">AI-infra bottlenecks</span>
               </span>
             </span>
