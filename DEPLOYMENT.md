@@ -322,8 +322,18 @@ frontend away from the tunnel.
 - **Connector can't hold a connection under WSL2** — QUIC over UDP degrades
   behind WSL2's NAT. Compose already forces `TUNNEL_TRANSPORT_PROTOCOL: http2`.
 - **Dashboard perpetually "warming up"** — `REDIS_URL` is unset or wrong, so
-  nothing persists between polls. It must be the `rediss://` Upstash string;
-  `redis://127.0.0.1` points the container at itself.
+  nothing persists between polls. It must be the `rediss://` Upstash string,
+  **unquoted** — Compose's `env_file` passes values through literally (unlike
+  a shell), so `REDIS_URL="rediss://..."` hands the app a literal leading `"`
+  and `redis.from_url()` rejects it as schemeless. `redis://127.0.0.1` also
+  fails: it points the container at itself.
+- **Edited `backend/.env` or `deploy/.env` and nothing changed** —
+  `make be-restart` / `docker compose restart` restarts the existing
+  container's process; it does not re-read `env_file`. An edited value only
+  takes effect after the container is recreated: `make be-up` (rebuilds too)
+  or `docker compose --env-file deploy/.env -f backend/docker-compose.yml up -d`.
+  Verify what a container actually has with
+  `docker exec relativeq-backend printenv REDIS_URL`.
 - **Bar history truncated or resetting** — two pollers on one Upstash database.
   Check for a running Fly machine: `flyctl machine list --app relativeqs-api`.
 - **CORS error on the deployed site** — the Vercel origin isn't in
