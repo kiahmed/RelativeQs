@@ -22,6 +22,7 @@ DEPLOY_DIR="$ROOT_DIR/deploy"
 FLY_CONFIG="$DEPLOY_DIR/fly.toml"
 DIST_DIR="$ROOT_DIR/dist"
 PROD_ENV_FILE="$DEPLOY_DIR/.env.production"
+DEPLOY_ENV_FILE="$DEPLOY_DIR/.env"
 BACKEND_ENV_FILE="$BACKEND_DIR/.env"
 
 # ----------------------------------------------------------------------------
@@ -238,10 +239,34 @@ deploy_backend() {
 
 # Point the frontend prod env at the deployed backend (derived from $FLY_APP).
 # Runs after a backend deploy; safe to call standalone too.
+#
+# The backend URL in deploy/.env.production has TWO possible owners:
+#   - this script, when Fly hosts the backend        -> https://$FLY_APP.fly.dev
+#   - deploy/cf-tunnel.sh, when a Cloudflare named tunnel fronts a locally
+#     hosted backend                                 -> https://$RELQS_API_HOST
+# Only one can be correct at a time. If deploy/.env names a tunnel host, the
+# tunnel is the front door: stamping the Fly URL here would silently point the
+# next frontend build at a backend that may not even be running. So we detect
+# that case and leave the file alone rather than clobbering it.
 write_backend_url() {
+  [ -f "$PROD_ENV_FILE" ] || { warn "no $PROD_ENV_FILE — skipping frontend URL update"; return 0; }
+
+  local tunnel_host=""
+  if [ -f "$DEPLOY_ENV_FILE" ]; then
+    tunnel_host=$(sed -n -E \
+      's/^[[:space:]]*RELQS_API_HOST[[:space:]]*=[[:space:]]*"?([^"#[:space:]]+)"?.*/\1/p' \
+      "$DEPLOY_ENV_FILE" | tail -n1)
+  fi
+
+  if [ -n "$tunnel_host" ]; then
+    warn "deploy/.env sets RELQS_API_HOST=$tunnel_host — the Cloudflare tunnel owns"
+    warn "$PROD_ENV_FILE, so it will NOT be rewritten to the Fly URL."
+    warn "To resync it to the tunnel host: ./deploy/cf-tunnel.sh create"
+    return 0
+  fi
+
   local http_url="https://$FLY_APP.fly.dev"
   local ws_url="wss://$FLY_APP.fly.dev/ws/market"
-  [ -f "$PROD_ENV_FILE" ] || { warn "no $PROD_ENV_FILE — skipping frontend URL update"; return 0; }
   info "Updating $PROD_ENV_FILE -> backend $http_url"
   if $DRY_RUN; then
     printf "${DIM}[dry-run]${NC} set VITE_RELQS_BACKEND_URL=%s / VITE_RELQS_WS_URL=%s\n" "$http_url" "$ws_url"
