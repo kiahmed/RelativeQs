@@ -1,13 +1,16 @@
 # RelativeQs — task runner.
 #   Local backend  -> Docker Compose (backend/docker-compose.yml)
+#                     + a Cloudflare named tunnel publishing it at
+#                       https://edge-relativeq.facades.trade
 #   Local frontend -> Vite (npm)
-#   Cloud          -> deploy_to_cloud.sh (Fly.io backend + Vercel UI)
+#   Cloud          -> deploy_to_cloud.sh (Vercel UI -> the tunnel above)
 #
 # Run `make` or `make help` to list targets.
 
 SHELL    := /bin/bash
-COMPOSE  := docker compose -f backend/docker-compose.yml
+COMPOSE  := docker compose --env-file deploy/.env -f backend/docker-compose.yml
 DEPLOY   := ./deploy_to_cloud.sh
+TUNNEL   := ./deploy/cf-tunnel.sh
 SERVICE  := relqs-web-service
 PROJECT  := relqs_backend
 FLY_APP  ?= relativeqs-api
@@ -45,6 +48,18 @@ be-ps: ## Show backend container status
 
 be-shell: ## Open a shell inside the running backend container
 	$(COMPOSE) exec $(SERVICE) /bin/bash
+
+## Local — Cloudflare tunnel (publishes the backend on a permanent hostname)
+# The tunnel definition lives in Cloudflare; the container only holds a token.
+# Create it once, then `be-up` starts the connector alongside the backend.
+tunnel-create: ## Create (or adopt) the named tunnel + DNS record, write the token
+	$(TUNNEL) create
+
+tunnel-status: ## Show tunnel state, ingress, DNS, connector and a public health probe
+	@$(TUNNEL) status
+
+tunnel-delete: ## Destroy the tunnel and its DNS record (prompts; ARGS=-y to skip)
+	$(TUNNEL) delete $(ARGS)
 
 ## Local — frontend (Vite)
 fe-install: ## Install frontend dependencies
@@ -133,6 +148,7 @@ prune: ## Remove THIS project's exited containers, dangling images & old build c
 
 .PHONY: help be-up be-down be-restart be-build be-logs be-ps be-shell \
         fe-install fe-dev fe-build fe-preview fe-test dev down \
+        tunnel-create tunnel-status tunnel-delete \
         deploy deploy-be deploy-fe deploy-dry vercel-check fly-check \
         fly-stop fly-start fly-retire takeover \
         secrets deploy-be-secrets clear-cache quotes prune
