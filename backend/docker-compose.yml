@@ -9,17 +9,11 @@ services:
     container_name: relqs-backend
     ports:
       - "8001:8000"
+    # Same env the Fly machine gets: REDIS_URL points at the managed Upstash
+    # instance, so a local run picks up the snapshot/bars keys the cloud
+    # deploy has been accumulating. Run ONE poller at a time — Fly and a local
+    # container both writing `bars:<date>` will clobber each other.
     env_file:
       - .env
-    environment:
-      REDIS_URL: redis://postiz-redis:6379/1
     volumes:
       - ./:/app
-    networks:
-      - default
-      - postiz
-
-networks:
-  postiz:
-    external: true
-    name: soljet-postiz_postiz-network

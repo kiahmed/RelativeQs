@@ -10,6 +10,7 @@ COMPOSE  := docker compose -f backend/docker-compose.yml
 DEPLOY   := ./deploy_to_cloud.sh
 SERVICE  := relqs-web-service
 PROJECT  := relqs_backend
+FLY_APP  ?= relativeqs-api
 
 # Pass extra flags through, e.g.  make deploy ARGS="-n"  /  make quotes ARGS="QQQ SMH"
 ARGS ?=
@@ -81,6 +82,24 @@ deploy-fe: ## Deploy only the frontend to Vercel
 deploy-dry: ## Dry-run the full deploy (prints commands, runs nothing)
 	$(DEPLOY) -n -y
 
+# The backend is a SINGLETON poller: it writes bars:<date> and snapshot:latest
+# into the shared Upstash Redis. Fly and a local container must never run at
+# the same time or they clobber each other's bars. Stop Fly first.
+fly-stop: ## Stop the Fly machine(s) so the local backend is the only poller
+	@flyctl machine list --app $(FLY_APP) -q | xargs -r -n1 flyctl machine stop --app $(FLY_APP)
+	@flyctl machine list --app $(FLY_APP)
+
+fly-start: ## Restart the stopped Fly machine(s) (stop the local backend first)
+	@flyctl machine list --app $(FLY_APP) -q | xargs -r -n1 flyctl machine start --app $(FLY_APP)
+	@flyctl machine list --app $(FLY_APP)
+
+fly-retire: ## Destroy the Fly machine(s) for good (redeploy with 'make deploy-be')
+	flyctl scale count 0 --app $(FLY_APP) --yes
+	@flyctl machine list --app $(FLY_APP)
+
+takeover: fly-stop be-up ## Stop Fly, then start the local backend on the same Upstash
+	@echo "✓ Fly stopped, local backend up on :8001 — it now owns the Upstash keys"
+
 ## Cloud — checks
 vercel-check: ## Verify Vercel login / token
 	@vercel whoami && echo "OK: logged in to Vercel" || echo "FAIL: run 'vercel login' or export VERCEL_TOKEN"
@@ -115,4 +134,5 @@ prune: ## Remove THIS project's exited containers, dangling images & old build c
 .PHONY: help be-up be-down be-restart be-build be-logs be-ps be-shell \
         fe-install fe-dev fe-build fe-preview fe-test dev down \
         deploy deploy-be deploy-fe deploy-dry vercel-check fly-check \
+        fly-stop fly-start fly-retire takeover \
         secrets deploy-be-secrets clear-cache quotes prune
