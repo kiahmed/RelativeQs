@@ -17,8 +17,12 @@ doc/
 # lead-persistence runner artifacts (never commit)
 backend/conf/
 backend/lead_runner.db
-backend/webull_data_sdk.log
+backend/webull_data_sdk.log*
 .claude
 
 # local SQLite data (rotation backtests etc.) — not tracked
 backend/*.db
+
+# log files (incl. rotated: foo.log.2026-06-12_11)
+*.log
+*.log.*

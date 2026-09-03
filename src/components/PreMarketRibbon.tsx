@@ -231,10 +231,14 @@ export default function PreMarketRibbon({ className = '' }: { className?: string
               <tr>
                 <th className="px-3 py-2 font-medium" title="Nasdaq-100 ticker">Symbol</th>
                 <th
-                  className="px-3 py-2 text-right font-medium"
+                  className="px-3 py-2 font-medium"
                   title="Gap into the open (overnight) | move since the 9:30 open"
                 >
-                  pre-mkt <span className="text-slate-600">|</span> since open
+                  <span className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
+                    <span className="text-right">pre-mkt</span>
+                    <span className="text-slate-600">|</span>
+                    <span className="text-left">since open</span>
+                  </span>
                 </th>
                 <th className="px-3 py-2 font-medium" title="Sector bucket">Sector</th>
                 <th className="px-3 py-2 font-medium" title="Moving with or against the overnight futures (NQ)">
@@ -252,16 +256,24 @@ export default function PreMarketRibbon({ className = '' }: { className?: string
               {movers.map((m) => (
                 <tr key={m.symbol} className="border-t border-slate-800/70">
                   <td className="px-3 py-2 font-semibold text-white">{m.symbol}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    <span className={m.dir === 'up' ? 'text-emerald-300' : 'text-rose-300'}>{pct(m.gap)}</span>
-                    {m.since_open !== null && (
-                      <>
-                        <span className="mx-1 text-slate-600">|</span>
-                        <span className={m.since_open >= 0 ? 'text-emerald-300' : 'text-rose-300'}>
-                          {pct(m.since_open)}
-                        </span>
-                      </>
-                    )}
+                  <td className="px-3 py-2 tabular-nums">
+                    <span className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
+                      <span className={`text-right ${m.dir === 'up' ? 'text-emerald-300' : 'text-rose-300'}`}>
+                        {pct(m.gap)}
+                      </span>
+                      <span className="text-slate-600">|</span>
+                      <span
+                        className={`text-left ${
+                          m.since_open === null
+                            ? 'text-slate-600'
+                            : m.since_open >= 0
+                              ? 'text-emerald-300'
+                              : 'text-rose-300'
+                        }`}
+                      >
+                        {m.since_open === null ? '—' : pct(m.since_open)}
+                      </span>
+                    </span>
                   </td>
                   <td className="px-3 py-2 capitalize text-slate-400">{m.sector ?? '—'}</td>
                   <td className={`px-3 py-2 ${m.vs_tape === 'counter_tape' ? 'text-amber-300' : 'text-slate-400'}`}>
