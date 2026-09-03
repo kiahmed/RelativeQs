@@ -297,9 +297,10 @@ frontend needs no rebuild.
 
 ## 10. Legacy: the Fly backend
 
-Fly used to host the backend at `https://relativeqs-api.fly.dev`. It has been
-superseded by the tunnel, but the plumbing is still present:
-`deploy/fly.toml`, `make deploy-be`, `make secrets`, `make fly-*`.
+Fly used to host the backend, before the tunnel superseded it. The plumbing is
+still present and usable: `deploy/fly.toml` (app name, region), `make deploy-be`,
+`make secrets`, `make fly-*`. Everything reads the app name from `deploy/fly.toml`
+(override for a one-off with `FLY_APP=... make deploy-be`).
 
 If you ever run both, remember the singleton rule — `make fly-stop` before
 `make be-up`, or `make takeover` to do both. `deploy_to_cloud.sh` will *not*
@@ -335,7 +336,7 @@ frontend away from the tunnel.
   Verify what a container actually has with
   `docker exec relativeq-backend printenv REDIS_URL`.
 - **Bar history truncated or resetting** — two pollers on one Upstash database.
-  Check for a running Fly machine: `flyctl machine list --app relativeqs-api`.
+  Check for (and stop) a stray Fly machine with `make fly-stop`.
 - **CORS error on the deployed site** — the Vercel origin isn't in
   `CORS_ORIGINS` in `backend/.env`. Add it and `make be-restart`.
 - **Frontend still calls the old backend** — the URL is inlined at build time.

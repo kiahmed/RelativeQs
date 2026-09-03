@@ -2,8 +2,8 @@
 #
 # deploy_to_cloud.sh — deploy RelativeQs to Vercel (frontend) and Fly.io (backend).
 #
-#   Frontend  ->  Vercel             ->  https://relativeqs.vercel.app
-#   Backend   ->  Fly.io             ->  https://relativeqs-api.fly.dev
+#   Frontend  ->  Vercel             ->  https://<vercel-project>.vercel.app
+#   Backend   ->  Fly.io             ->  https://<fly-app>.fly.dev
 #
 # Run `./deploy_to_cloud.sh --help` for usage.
 
@@ -12,7 +12,6 @@ set -euo pipefail
 # ----------------------------------------------------------------------------
 # Config (override via env, e.g. FLY_APP=foo ./deploy_to_cloud.sh -b)
 # ----------------------------------------------------------------------------
-FLY_APP="${FLY_APP:-relativeqs-api}"
 VERCEL_PROJECT="${VERCEL_PROJECT:-relativeqs}"
 FLY_REGION="${FLY_REGION:-iad}"
 
@@ -20,6 +19,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 DEPLOY_DIR="$ROOT_DIR/deploy"
 FLY_CONFIG="$DEPLOY_DIR/fly.toml"
+# App name lives in deploy/fly.toml (the `app` field); env var overrides it.
+FLY_APP="${FLY_APP:-$(awk -F'"' '/^app[[:space:]]*=/{print $2; exit}' "$FLY_CONFIG" 2>/dev/null)}"
 DIST_DIR="$ROOT_DIR/dist"
 PROD_ENV_FILE="$DEPLOY_DIR/.env.production"
 DEPLOY_ENV_FILE="$DEPLOY_DIR/.env"

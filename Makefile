@@ -13,7 +13,8 @@ DEPLOY   := ./deploy_to_cloud.sh
 TUNNEL   := ./deploy/cf-tunnel.sh
 SERVICE  := relqs-web-service
 PROJECT  := relqs_backend
-FLY_APP  ?= relativeqs-api
+# App name comes from deploy/fly.toml; override with `make <target> FLY_APP=...`.
+FLY_APP  ?= $(shell awk -F'"' '/^app[[:space:]]*=/{print $$2; exit}' deploy/fly.toml 2>/dev/null)
 
 # Pass extra flags through, e.g.  make deploy ARGS="-n"  /  make quotes ARGS="QQQ SMH"
 ARGS ?=
