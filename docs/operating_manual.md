@@ -418,5 +418,85 @@ fine on price and isn't.
 
 ---
 
+## 15. Running the system
+
+The dashboard is the visible half. This section is the other half — what
+actually has to be running for those cards to fill with data, and what to check
+when they don't. Full setup lives in [DEPLOYMENT.md](../DEPLOYMENT.md); this is
+the day-to-day.
+
+### What's running, and where
+
+Four pieces, and only one of them is on your machine:
+
+| Piece | Where | If it stops |
+|---|---|---|
+| Frontend | Vercel | the site itself goes down |
+| Backend + poller | a container on your machine | data freezes; the page still loads |
+| Cloudflare tunnel | your machine → Cloudflare | the site loads but can't fetch anything |
+| Supabase / Upstash | managed cloud | login breaks / history stops persisting |
+
+The backend runs **locally**, published to the internet through a Cloudflare
+named tunnel at `https://edge-relativeq.facades.trade`. So if your machine is
+off, the deployed site is up but empty. That is the normal, expected behaviour
+of this setup — not a bug.
+
+### The one rule
+
+The backend is a **single-writer poller**. It accumulates the day's intraday
+bars into Upstash, and that history can't be rebuilt after the fact. Never run
+two backends against the same Upstash database — a second one silently
+overwrites the first one's bars. One machine, one backend, one poller.
+
+### Daily checks
+
+```bash
+make be-ps           # both containers Up? backend should say (healthy)
+make tunnel-status   # tunnel healthy, connections > 0, health probe 200
+make be-logs         # what the poller is doing right now
+```
+
+`make tunnel-status` is the single most useful command: it checks the tunnel,
+its ingress, the DNS record, the local connector and the public URL in one
+pass, and tells you which of them is the broken link.
+
+### Starting and stopping
+
+```bash
+make be-up        # start everything (backend + tunnel connector)
+make be-down      # stop everything
+make be-restart   # restart just the backend
+```
+
+Restarting is safe. The public hostname lives in Cloudflare, not in the
+container, so it survives restarts, rebuilds and reboots — you never need to
+rebuild the frontend just because the backend bounced.
+
+### When something looks wrong
+
+| Symptom | Look at first |
+|---|---|
+| Whole site down | Vercel — is the deployment live? |
+| Site loads, every card empty | is the backend running? `make be-ps` |
+| Cards empty and tunnel probe fails | `make tunnel-status` — connector or DNS |
+| Everything stuck "warming up" | `REDIS_URL` unset — nothing is persisting |
+| Data hours stale | poller died: `make be-logs`, then `make be-restart` |
+| Numbers jumping around oddly | two pollers running — see *The one rule* |
+
+Anything not covered here is in the troubleshooting section of
+[DEPLOYMENT.md](../DEPLOYMENT.md).
+
+### After a change to the backend URL
+
+The frontend has its backend URL compiled in at build time. If the tunnel
+hostname ever changes, the site keeps calling the old one until you rebuild:
+
+```bash
+make tunnel-create   # re-point the tunnel and sync deploy/.env.production
+make deploy-fe       # rebuild and redeploy the frontend
+```
+
+---
+
 *RelativeQs is Nasdaq‑100 internals analytics and education — not investment
 advice. Past performance does not guarantee future results.*

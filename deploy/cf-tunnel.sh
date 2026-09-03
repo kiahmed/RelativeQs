@@ -5,7 +5,7 @@
 #
 #   browser -> https://edge-relativeq.facades.trade  (Cloudflare edge)
 #           -> relqs-cloudflared (this tunnel)
-#           -> http://relqs-backend:8000        (compose network)
+#           -> http://relativeq-backend:8000        (compose network)
 #
 # A *named* tunnel keeps the same hostname across restarts, rebuilds and host
 # moves — which is why the Vercel frontend can bake the URL in at build time
@@ -44,7 +44,7 @@ set -a; . "$ENV_FILE"; set +a
 
 TUNNEL_NAME="${RELQS_TUNNEL_NAME:-relativeq-backend-tunnel}"
 API_HOST="${RELQS_API_HOST:-edge-relativeq.facades.trade}"
-ORIGIN_SERVICE="${RELQS_ORIGIN_SERVICE:-http://relqs-backend:8000}"
+ORIGIN_SERVICE="${RELQS_ORIGIN_SERVICE:-http://relativeq-backend:8000}"
 CF_ZONE="${RELQS_CF_ZONE:-facades.trade}"
 
 : "${CF_API_TOKEN:?CF_API_TOKEN must be set in deploy/.env}"
@@ -267,11 +267,16 @@ for r in rs:
 
   printf "\n${BOLD}Public health probe${NC}\n"
   local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$API_HOST/api/health" || echo 000)
+  # curl -w always prints a status (000 when no response ever arrived), so a
+  # `|| echo 000` fallback concatenates a second one and reports "HTTP 000000".
+  # Swallow curl's exit status instead, then normalise an empty result.
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$API_HOST/api/health" 2>/dev/null || true)
+  [ -n "$code" ] || code=000
   if [ "$code" = "200" ]; then
     ok "https://$API_HOST/api/health -> 200"
-  else
-    warn "https://$API_HOST/api/health -> HTTP $code"
+  elif [ "$code" = "000" ]; then
+    warn "https://$API_HOST/api/health -> no response"
+    warn "  (hostname not resolving, or the edge cannot reach the connector)"
   fi
 }
 

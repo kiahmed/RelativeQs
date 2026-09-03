@@ -306,6 +306,13 @@ deploy_frontend() {
     warn "--skip-build: deploying existing .vercel/output as-is"
     [ -d "$ROOT_DIR/.vercel/output" ] || die "nothing prebuilt — run without --skip-build first"
   else
+    # 'vercel build' refuses to run until the project's settings (framework,
+    # build command, output dir) exist locally — a fresh 'vercel link' writes
+    # only projectId/orgId, so a first deploy fails with
+    # "project_settings_required" without this. Idempotent, so run it always.
+    info "Pulling Vercel project settings"
+    run vercel pull --yes --environment=production
+
     info "Building frontend with prod env ($PROD_ENV_FILE)"
     run vercel build --prod
     ok "built -> .vercel/output"

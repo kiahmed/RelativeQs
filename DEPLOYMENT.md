@@ -1,105 +1,188 @@
 # Deployment Guide
 
-How to run RelativeQs locally, and how to ship it to the cloud.
+How to stand up RelativeQs from scratch, and how to deploy it.
 
-Two things get deployed:
-
-| Piece | Where | URL |
+| Piece | Runs on | Public address |
 |---|---|---|
 | Frontend (Vite/React SPA) | Vercel | https://relativeqs.vercel.app |
-| Backend (FastAPI + poll loop) | Fly.io, **or** a local container | https://relativeqs-api.fly.dev |
+| Backend (FastAPI + poll loop) | a local Docker container | https://edge-relativeq.facades.trade |
+| Connector (cloudflared) | a local Docker container | — (outbound only) |
+| Auth + Postgres | Supabase Cloud | — |
+| Snapshot + bar history | Upstash Redis | — |
 
-Both talk to the same two managed services: **Supabase** (Postgres + Auth)
-and **Upstash Redis** (snapshot + intraday bar history).
+The backend is **not** hosted in the cloud. It runs on your machine and is
+published on a permanent HTTPS hostname by a Cloudflare *named* tunnel. The
+Vercel frontend talks to that hostname, so the browser never needs to know
+where the backend physically is.
 
 ## Topology
 
 ```
-  ┌─────────────────────┐         ┌─────────────────────┐
-  │  React frontend     │ ──auth─▶│   Supabase Cloud    │
-  │  Vercel (prod)      │         │   (Postgres + Auth) │
-  │  Vite :5173 (dev)   │         └─────────────────────┘
-  └──────────┬──────────┘                  ▲
-             │                             │ REST + JWT verify
-             │ HTTPS + WSS                 │
-             ▼                             │
-  ┌─────────────────────┐                  │
-  │  FastAPI backend    │──────────────────┘
-  │  Fly machine, OR    │
-  │  local container    │──▶ Upstash Redis (managed, rediss://)
-  │  :8001 -> :8000     │──▶ Yahoo market data
-  └─────────────────────┘──▶ Stripe / Resend (optional)
+   browser
+      │
+      ├──────────────▶ https://relativeqs.vercel.app        (static SPA, Vercel)
+      │                        │
+      │                        │ HTTPS + WSS
+      │                        ▼
+      │            https://edge-relativeq.facades.trade      (Cloudflare edge)
+      │                        │
+      │                        │  named tunnel 813121d1-…
+      │                        ▼
+      │            ┌───────────────────────┐
+      │            │  relqs-cloudflared    │   connector, outbound only
+      │            └───────────┬───────────┘
+      │                        │ http://relativeq-backend:8000  (compose net)
+      │                        ▼
+      │            ┌───────────────────────┐
+      │            │  relativeq-backend    │──▶ Upstash Redis (rediss://)
+      │            │  FastAPI + poller     │──▶ Yahoo market data
+      │            │  127.0.0.1:8001→8000  │──▶ Stripe / Resend (optional)
+      │            └───────────┬───────────┘
+      │                        │ JWT verify / REST
+      └────────────────────────┴──────────▶ Supabase Cloud
 ```
+
+### Why a *named* tunnel
+
+A quick tunnel hands out a fresh `*.trycloudflare.com` address every restart.
+The Vercel frontend bakes its backend URL in at **build time**, so a rotating
+address would mean rebuilding the frontend on every backend restart. A named
+tunnel keeps one hostname across restarts, rebuilds and host moves.
+
+The tunnel's definition — name, ingress, DNS — lives in Cloudflare, not in the
+container. The container holds only a connector token. That's why
+`make tunnel-delete` genuinely destroys it, and `make tunnel-create` is
+idempotent (re-running adopts the existing tunnel and re-applies ingress).
 
 ### The backend is a singleton
 
-The backend is not a plain request/response API. `_poll_and_broadcast` runs
-forever: it fetches market data, writes `snapshot:latest` and `bars:<date>`
-into Redis, and pushes updates over websockets. That intraday bar history
-accumulates over the trading day and cannot be re-derived after the fact.
+`_poll_and_broadcast` runs forever: it fetches market data, writes
+`snapshot:latest` and `bars:<date>` into Redis, and pushes updates over
+websockets. That intraday bar history accumulates through the trading day and
+cannot be re-derived afterwards.
 
-**Exactly one backend may run at a time.** The Fly machine and a local
-container both write the same Upstash keys — running both clobbers the bar
-history. Before starting a local backend, stop Fly (see
-[Switching between Fly and local](#switching-between-fly-and-local)).
+**Only one backend may run against a given Upstash database at a time.** Two
+pollers writing the same `bars:<date>` clobber each other. If a Fly machine is
+still running from the old topology, stop it first (`make fly-stop`).
 
 ## Prerequisites
 
 - Docker (Docker Desktop on WSL2 is fine)
 - Node.js 18+ and npm
-- A Supabase project (free tier is enough)
-- An Upstash Redis database (free tier is enough)
-- For cloud deploys: `flyctl` and `vercel` CLIs, both logged in
-- Optional: Stripe account + CLI (billing), Resend account (alert emails)
+- `vercel` CLI, logged in (`vercel login`)
+- A Supabase project
+- An Upstash Redis database
+- A Cloudflare account holding the DNS zone you'll publish under, plus an API
+  token (see [§4](#4-tunnel-env-deployenv))
+
+`flyctl` is only needed if you still operate the legacy Fly backend.
 
 ## 1. Clone and configure
 
 ```bash
 git clone <repo-url> RelativeQs
 cd RelativeQs
-cp .env.example .env                                       # frontend env
-cp backend/.env.example backend/.env                       # backend env
-cp deploy/.env.production.example deploy/.env.production   # frontend prod env
+cp .env.example .env                                       # frontend dev env
+cp backend/.env.example backend/.env                       # backend runtime env
+cp deploy/.env.example deploy/.env                         # tunnel/deploy env
+cp deploy/.env.production.example deploy/.env.production   # frontend build env
 ```
 
-All three copies are gitignored. `backend/.env` holds real secrets — it is
-also the source `deploy_to_cloud.sh --sync-secrets` reads when pushing Fly
-secrets, so keep it complete.
+All four copies are gitignored. They have distinct jobs:
 
-## 2. Supabase (cloud)
+| File | Read by | Holds |
+|---|---|---|
+| `.env` | Vite dev server | local backend URL, Supabase anon key |
+| `backend/.env` | the backend container | Redis, Supabase, Stripe, Resend, providers |
+| `deploy/.env` | `cf-tunnel.sh`, docker compose | Cloudflare token, tunnel name/host |
+| `deploy/.env.production` | `vercel build` | the tunnel URL baked into the bundle |
 
-1. Create a project at https://supabase.com (or reuse an existing one).
-2. Apply the SQL migrations in order: Supabase dashboard → **SQL Editor**
-   → paste each file → **Run**:
+`deploy/.env` is deploy-time only — the application never reads it.
+
+## 2. Supabase
+
+1. Create a project at https://supabase.com.
+2. Apply the migrations in order via **SQL Editor**:
    - `supabase/migrations/0001_profiles.sql`
    - `supabase/migrations/0002_alerts.sql`
 3. From **Settings → API**, copy:
-   - **Project URL** → `SUPABASE_URL` (backend) and `VITE_SUPABASE_URL`
-     (frontend)
+   - **Project URL** → `SUPABASE_URL` (backend) and `VITE_SUPABASE_URL` (frontend)
    - **anon public key** → `VITE_SUPABASE_ANON_KEY` (frontend)
-   - **service_role key** (secret) → `SUPABASE_SERVICE_KEY` (backend)
-4. If the project uses legacy HS256 JWTs, also copy **JWT Secret** →
-   `SUPABASE_JWT_SECRET`. New projects with asymmetric keys don't need this
-   — the backend reads JWKS automatically.
+   - **service_role key** → `SUPABASE_SERVICE_KEY` (backend, secret)
+4. Legacy HS256 projects also need **JWT Secret** → `SUPABASE_JWT_SECRET`.
+   Projects using asymmetric keys are verified via JWKS automatically.
 
-## 3. Upstash Redis (cloud)
+## 3. Upstash Redis
 
-Redis is where the snapshot and the intraday bar history live, so the
-frontend keeps showing data across a backend restart.
+Redis holds the snapshot and the intraday bar history, so the dashboard keeps
+showing data across a backend restart.
 
-1. Create a database at https://upstash.com — region **us-east-1** to sit
-   close to the Fly `iad` machine and to US market data.
-2. Copy the **TLS (rediss://) connection string** into `REDIS_URL` in
+1. Create a database at https://upstash.com — region **us-east-1** keeps it
+   close to US market data.
+2. Copy the **TLS (`rediss://`) connection string** into `REDIS_URL` in
    `backend/.env`.
 
-Use the *same* `REDIS_URL` for the Fly machine and for local runs — that's
-what lets a local container pick up the keys the cloud deploy accumulated.
+> With `REDIS_URL` empty the backend still boots, but every cache lookup misses
+> and no bar history is retained. The dashboard will look perpetually
+> "warming up". Set it before you rely on the data.
 
-> Do **not** point `REDIS_URL` at `redis://127.0.0.1:6379` when running via
-> Docker Compose: `127.0.0.1` resolves to the container itself, which has no
-> Redis. Either use the Upstash URL or run the backend natively.
+## 4. Tunnel env (`deploy/.env`)
 
-## 4. Backend env (`backend/.env`)
+```env
+CF_API_TOKEN=...          # Account → Cloudflare Tunnel → Edit
+CF_ACCOUNT_ID=...         # Zone → DNS → Edit  (on RELQS_CF_ZONE)
+CF_TUNNEL_TOKEN=          # written by 'make tunnel-create' — don't hand-edit
+RELQS_TUNNEL_ID=          # written by 'make tunnel-create' — don't hand-edit
+
+RELQS_TUNNEL_NAME=relativeq-backend-tunnel
+RELQS_API_HOST=edge-relativeq.facades.trade
+RELQS_CF_ZONE=facades.trade
+RELQS_ORIGIN_SERVICE=http://relativeq-backend:8000
+```
+
+The token needs **two** permissions on the account owning the zone:
+
+- `Account → Cloudflare Tunnel → Edit` — create/inspect/delete the tunnel
+- `Zone → DNS → Edit` on `RELQS_CF_ZONE` — create the CNAME
+
+With only the first, `cf-tunnel.sh` still creates the tunnel and sets ingress,
+then prints the CNAME for you to add by hand. See
+[DNS by hand](#dns-by-hand) below.
+
+`RELQS_ORIGIN_SERVICE` must match the backend container's network alias
+(`relativeq-backend`) and its in-container port (`8000`), not the published
+host port.
+
+## 5. Create the tunnel
+
+```bash
+make tunnel-create
+```
+
+This creates (or adopts) the named tunnel, writes its ingress, creates the DNS
+record, stores the connector token in `deploy/.env`, and points
+`deploy/.env.production` at the tunnel hostname. It is safe to re-run — do so
+after changing `RELQS_API_HOST` or `RELQS_ORIGIN_SERVICE`.
+
+```bash
+make tunnel-status    # tunnel state, ingress, DNS, connector, public health probe
+make tunnel-delete    # destroy the tunnel and its DNS record (prompts)
+```
+
+### DNS by hand
+
+If the token can't see the zone, `make tunnel-create` prints exactly what to
+add. In **Cloudflare → your zone → DNS**:
+
+| Type | Name | Target | Proxy |
+|---|---|---|---|
+| CNAME | `edge-relativeq` | `<RELQS_TUNNEL_ID>.cfargotunnel.com` | **Proxied** |
+
+The record *must* be proxied (orange cloud) — a DNS-only record won't route
+through the tunnel. Until it exists the hostname will not resolve and
+`make tunnel-status` reports a non-200 health probe.
+
+## 6. Backend env (`backend/.env`)
 
 Required:
 
@@ -109,28 +192,43 @@ REDIS_URL=rediss://default:...@...upstash.io:6379
 
 SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co
 SUPABASE_SERVICE_KEY=...
-# SUPABASE_JWT_SECRET=...  # only for legacy HS256 projects
 
 FRONTEND_URL=http://localhost:5173
-```
-
-Optional (billing / alerts / the deployed frontend's origin):
-
-```env
-STRIPE_SECRET_KEY=sk_test_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_PRICE_ID=price_...
-RESEND_API_KEY=re_...
-ALERT_FROM_EMAIL=RelativeQs <onboarding@resend.dev>
 CORS_ORIGINS=https://relativeqs.vercel.app
 ```
 
-See `backend/.env.example` for the full annotated list (poll cadence,
-per-provider rate limits, the AI-capex basket).
+`CORS_ORIGINS` must list the deployed frontend's origin or the browser will be
+blocked from calling the API. localhost dev origins are always allowed.
 
-## 5. Frontend env (`.env`)
+Optional: `STRIPE_*` (billing), `RESEND_API_KEY` / `ALERT_FROM_EMAIL` (alerts).
+See `backend/.env.example` for the full annotated list, including poll cadence,
+per-provider rate limits and the AI-capex basket.
+
+## 7. Start the stack
+
+```bash
+make be-up      # builds and starts relativeq-backend + relqs-cloudflared
+make be-logs    # tail the backend
+```
+
+Compose reads `--env-file deploy/.env` on every call so `CF_TUNNEL_TOKEN`
+interpolates into the connector. Verify locally, then publicly:
+
+```bash
+curl http://127.0.0.1:8001/api/health              # published to loopback only
+curl https://edge-relativeq.facades.trade/api/health
+make tunnel-status
+```
+
+The backend port is bound to `127.0.0.1:8001` deliberately — the tunnel reaches
+it over the compose network, so it never needs to listen on a public interface.
+
+## 8. Frontend
+
+Local development:
 
 ```env
+# .env
 VITE_RELQS_BACKEND_URL=http://localhost:8001
 VITE_RELQS_WS_URL=ws://localhost:8001/ws/market
 VITE_POLL_INTERVAL_MS=12000
@@ -138,176 +236,102 @@ VITE_SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co
 VITE_SUPABASE_ANON_KEY=...
 ```
 
-Port **8001** is the Compose-published port (the container listens on 8000;
-`docker-compose.yml` maps `8001:8000`). If you instead run uvicorn natively
-on port 8000, use 8000 in both URLs.
-
-Vite inlines these at build time. Restart `npm run dev` after editing.
-
-## 6. Start the backend
-
 ```bash
-make be-up        # docker compose up --build -d
-make be-logs      # tail the logs
+make fe-install
+make fe-dev       # http://localhost:5173
 ```
 
-Verify:
+Port 8001 is what compose publishes. Running uvicorn natively instead? Use 8000.
 
-- API docs: http://localhost:8001/docs
-- Health: `curl http://localhost:8001/api/health`
+### Deploy to Vercel
 
-## 7. Start the frontend
-
-```bash
-make fe-install   # npm install
-make fe-dev       # npm run dev
-```
-
-Open http://localhost:5173. `make dev` does both (backend container, then
-the Vite dev server).
-
-## 8. Verify the whole flow
-
-1. Register a new account on the frontend.
-2. Confirm the email (Supabase sends a confirmation if email confirmations
-   are enabled in your project).
-3. Log in. The dashboard should populate with snapshot data from the backend.
-4. Check that the backend log shows snapshot polling and that the websocket
-   connects.
-
----
-
-# Cloud deploy
-
-`deploy_to_cloud.sh` drives both halves; the Makefile wraps it. Run
-`./deploy_to_cloud.sh --help` for the full flag list.
-
-```bash
-make deploy-dry   # print every command, run nothing — always start here
-make deploy       # backend (Fly) + frontend (Vercel)
-make deploy-be    # backend only
-make deploy-fe    # frontend only
-```
-
-Check you're authenticated first:
-
-```bash
-make fly-check
-make vercel-check
-```
-
-## Backend → Fly.io
-
-`make deploy-be` runs `flyctl deploy` with the build context set to
-`backend/`, `deploy/fly.toml` as config, and `--ha=false`.
-
-`deploy/fly.toml` deliberately sets `auto_stop_machines = false`,
-`auto_start_machines = false` and `min_machines_running = 1`: this is an
-outbound-only always-on poller with no inbound traffic of its own, so any
-autostop idle-timer would kill the loop. `min_machines_running` alone is not
-enough — autostop must be fully disabled. The VM is 512MB because
-pandas + numpy + scipy + scikit-learn OOM on import at 256MB.
-
-After a successful backend deploy the script rewrites the two URL lines in
-`deploy/.env.production` to point at `https://$FLY_APP.fly.dev`, so the next
-frontend deploy bakes in the right host.
-
-### Secrets
-
-Non-secret defaults (`DATA_PROVIDER`, `POLL_INTERVAL_SECONDS`, `LOG_LEVEL`,
-…) live in `[env]` in `deploy/fly.toml`. Everything secret — `REDIS_URL`,
-`SUPABASE_*`, `STRIPE_*`, `RESEND_*`, `CORS_ORIGINS` — is pushed from
-`backend/.env` to Fly secrets:
-
-```bash
-make secrets             # sync only
-make deploy-be-secrets   # sync, then deploy
-```
-
-The sync skips comments, blanks, and unfilled placeholders (`your-*`,
-`sk_test_your*`, …), and strips one layer of surrounding quotes.
-
-## Frontend → Vercel
-
-Vercel hosts the **frontend only**. `.vercelignore` hides `backend/`,
-`supabase/`, `deploy/` and friends so the CLI doesn't auto-detect the
-FastAPI app and turn this into a multi-service deploy.
-
-`make deploy-fe` copies `deploy/.env.production` to `./.env.production`,
-runs `vercel build --prod` (Vite auto-loads `.env.production` in production
-mode and inlines the `VITE_*` values), then `vercel deploy --prebuilt --prod`.
-Because the values are inlined at build time, there is nothing to configure
-in the Vercel dashboard.
-
-`vercel.json` rewrites all paths to `/index.html` for client-side routing.
-
-Only the **anon** Supabase key belongs in `deploy/.env.production` — it ends
-up in the browser bundle. Never the `service_role` key.
-
-## After deploying the frontend
-
-Add the Vercel origin to `CORS_ORIGINS` in `backend/.env` and re-sync
-secrets, or the browser will be blocked from calling the API:
+`deploy/.env.production` holds the **tunnel** URL — `make tunnel-create` keeps
+it in sync, so you shouldn't need to edit it by hand:
 
 ```env
-CORS_ORIGINS=https://relativeqs.vercel.app
+VITE_RELQS_BACKEND_URL=https://edge-relativeq.facades.trade
+VITE_RELQS_WS_URL=wss://edge-relativeq.facades.trade/ws/market
 ```
 
 ```bash
-make deploy-be-secrets
+make deploy-fe
 ```
 
-## Switching between Fly and local
+That copies `deploy/.env.production` to `./.env.production`, runs
+`vercel build --prod` (Vite inlines the `VITE_*` values), then
+`vercel deploy --prebuilt --prod`. Because the values are inlined at build
+time, there is nothing to configure in the Vercel dashboard — but it also
+means **changing the backend hostname requires a frontend rebuild**.
 
-Only one poller may run at a time (see [above](#the-backend-is-a-singleton)).
+Only the **anon** Supabase key belongs here; it ships to the browser. Never the
+`service_role` key.
+
+`.vercelignore` hides `backend/`, `supabase/`, `deploy/` and friends so the CLI
+doesn't detect the FastAPI app and try to make this a multi-service deploy.
+`vercel.json` rewrites all paths to `/index.html` for client-side routing.
+
+## 9. Day-to-day operations
 
 ```bash
-make takeover     # stop Fly, then start the local backend on the same Upstash
-make fly-start    # hand the role back to Fly (stop the local one first: make be-down)
-make fly-retire   # scale Fly to 0 for good; 'make deploy-be' brings it back
+make be-up        # (re)build and start the stack
+make be-down      # stop it
+make be-restart   # restart just the backend
+make be-logs      # tail backend logs
+make be-ps        # container status
+make be-shell     # shell inside the backend
+
+make tunnel-status   # is the tunnel healthy and does the hostname answer?
+make tunnel-create   # re-apply ingress / DNS after a config change
+make tunnel-delete   # tear the tunnel down
+
+make deploy-fe    # rebuild + ship the frontend
+make fe-test      # frontend tests
+make clear-cache  # clear the Redis market-data cache (prompts)
+make prune        # clean up this project's docker leftovers
+make help         # list every target
 ```
 
-`FLY_APP` is overridable in both the Makefile and `deploy_to_cloud.sh`:
-`make takeover FLY_APP=my-app`.
+A normal restart is `make be-down && make be-up`. The tunnel survives it —
+the hostname and DNS live in Cloudflare, so nothing needs re-pointing and the
+frontend needs no rebuild.
 
-## Common operations
+## 10. Legacy: the Fly backend
 
-```bash
-make be-logs                 # tail backend logs
-make be-up                   # rebuild + restart after a backend code change
-make be-down                 # stop the backend
-make be-shell                # shell inside the container
-make clear-cache             # clear the Redis market-data cache (prompts)
-make quotes ARGS="QQQ SMH"   # fetch live quotes
-make prune                   # clean up this project's docker leftovers
-make help                    # list every target
-```
+Fly used to host the backend at `https://relativeqs-api.fly.dev`. It has been
+superseded by the tunnel, but the plumbing is still present:
+`deploy/fly.toml`, `make deploy-be`, `make secrets`, `make fly-*`.
+
+If you ever run both, remember the singleton rule — `make fly-stop` before
+`make be-up`, or `make takeover` to do both. `deploy_to_cloud.sh` will *not*
+overwrite `deploy/.env.production` with the Fly URL while `RELQS_API_HOST` is
+set in `deploy/.env`, so a stray backend deploy can't silently repoint the
+frontend away from the tunnel.
 
 ## Troubleshooting
 
-- **Dashboard is empty / snapshot never arrives** — the backend can't reach
-  Redis. Check `REDIS_URL` in `backend/.env` is the `rediss://` Upstash
-  string, not `redis://127.0.0.1` (unreachable from inside the container).
-- **Bar history looks truncated or keeps resetting** — two pollers are
-  writing the same Upstash keys. Confirm the Fly machine is stopped:
-  `flyctl machine list --app relativeqs-api`. Use `make takeover`.
+- **Hostname doesn't resolve** — the CNAME is missing. `make tunnel-status`
+  shows the DNS section; add the proxied record from
+  [DNS by hand](#dns-by-hand).
+- **`502` / `1033` from the edge** — the tunnel is up but the connector can't
+  reach the origin. Check `RELQS_ORIGIN_SERVICE` matches the backend's alias
+  and in-container port (`http://relativeq-backend:8000`), and that
+  `make be-ps` shows both containers Up.
+- **Connector exits immediately** — `CF_TUNNEL_TOKEN` is empty in
+  `deploy/.env`. Run `make tunnel-create`. (Compose deliberately uses `:-`
+  rather than `:?` so a missing token doesn't break `down` / `logs` / `ps`.)
+- **Connector can't hold a connection under WSL2** — QUIC over UDP degrades
+  behind WSL2's NAT. Compose already forces `TUNNEL_TRANSPORT_PROTOCOL: http2`.
+- **Dashboard perpetually "warming up"** — `REDIS_URL` is unset or wrong, so
+  nothing persists between polls. It must be the `rediss://` Upstash string;
+  `redis://127.0.0.1` points the container at itself.
+- **Bar history truncated or resetting** — two pollers on one Upstash database.
+  Check for a running Fly machine: `flyctl machine list --app relativeqs-api`.
+- **CORS error on the deployed site** — the Vercel origin isn't in
+  `CORS_ORIGINS` in `backend/.env`. Add it and `make be-restart`.
+- **Frontend still calls the old backend** — the URL is inlined at build time.
+  Re-run `make deploy-fe` after changing the hostname.
 - **`401 Invalid or expired session`** — `SUPABASE_URL` mismatch between
-  frontend and backend, or the JWT signing scheme switched. Re-copy both
-  values from Settings → API.
-- **CORS error in the browser on the deployed site** — the Vercel origin
-  isn't in `CORS_ORIGINS`. Add it to `backend/.env` and `make secrets`.
-  localhost dev origins are always allowed.
-- **Frontend can't reach the backend locally** — check
-  `VITE_RELQS_BACKEND_URL` uses port **8001**, and that `make be-ps` shows
-  `relqs-web-service` Up on `0.0.0.0:8001->8000`.
-- **Stripe webhook 400 / signature failure** — `STRIPE_WEBHOOK_SECRET`
-  doesn't match the `whsec_` printed by `stripe listen`. They rotate per CLI
-  session. Forward to the published port:
+  frontend and backend, or the JWT signing scheme changed.
+- **Stripe webhook signature failure** — forward to the published port:
   `stripe listen --forward-to http://localhost:8001/api/billing/webhook`.
-- **Fly machine keeps stopping** — something re-enabled autostop. Both
-  `auto_stop_machines = false` and `min_machines_running = 1` must be set in
-  `deploy/fly.toml`.
-- **Fly deploy OOMs on import** — the VM is below 512MB. See `[[vm]]` in
-  `deploy/fly.toml`.
-- **Vercel tries to build the backend** — something was removed from
-  `.vercelignore`. It must keep hiding `backend/`.
+  The `whsec_` rotates per CLI session.

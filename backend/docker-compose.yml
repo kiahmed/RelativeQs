@@ -1,6 +1,6 @@
 # Local backend stack:
 #
-#   relqs-backend      FastAPI poller + API (uvicorn on :8000 inside the net)
+#   relativeq-backend      FastAPI poller + API (uvicorn on :8000 inside the net)
 #   relqs-cloudflared  Cloudflare named tunnel -> https://edge-relativeq.facades.trade
 #
 # Project name -> prefixes every compose-created resource (default network,
@@ -10,7 +10,7 @@ name: relqs_backend
 services:
   relqs-web-service:
     build: .
-    container_name: relqs-backend
+    container_name: relativeq-backend
     restart: unless-stopped
     # Host loopback only, for local curl/debugging. The tunnel does NOT use
     # this — it reaches the app over the compose network.
@@ -31,10 +31,10 @@ services:
       start_period: 30s
     networks:
       relqs-network:
-        # cf-tunnel.sh points the tunnel ingress at http://relqs-backend:8000,
+        # cf-tunnel.sh points the tunnel ingress at http://relativeq-backend:8000,
         # so pin that name rather than relying on the service name.
         aliases:
-          - relqs-backend
+          - relativeq-backend
 
   # Cloudflare *named* tunnel — a permanent hostname routed to the backend.
   # The hostname, ingress and DNS record live in Cloudflare and belong to the
