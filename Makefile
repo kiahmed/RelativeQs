@@ -109,9 +109,23 @@ fly-start: ## Restart the stopped Fly machine(s) (stop the local backend first)
 	@flyctl machine list --app $(FLY_APP) -q | xargs -r -n1 flyctl machine start --app $(FLY_APP)
 	@flyctl machine list --app $(FLY_APP)
 
-fly-retire: ## Destroy the Fly machine(s) for good (redeploy with 'make deploy-be')
-	flyctl scale count 0 --app $(FLY_APP) --yes
-	@flyctl machine list --app $(FLY_APP)
+# Full teardown: machines first, then the app record itself (name, IPs/DNS and
+# every synced secret). Irreversible — the $(FLY_APP) name is released and can
+# be claimed by anyone. backend/.env still holds the secrets, so a rebuild from
+# scratch is 'make deploy-be-secrets'. Each step tolerates an already-missing
+# resource so a half-torn-down app still cleans up instead of erroring out.
+fly-destroy: ## Tear down Fly completely: machines + app — irreversible
+	@if ! command -v flyctl >/dev/null 2>&1; then \
+	  echo "flyctl not installed — nothing to tear down"; \
+	elif ! flyctl status --app $(FLY_APP) >/dev/null 2>&1; then \
+	  echo "no Fly app '$(FLY_APP)' — nothing to tear down"; \
+	else \
+	  echo "→ destroying machines…"; \
+	  flyctl scale count 0 --app $(FLY_APP) --yes || echo "  (no machines — continuing)"; \
+	  echo "→ destroying app '$(FLY_APP)'…"; \
+	  flyctl apps destroy $(FLY_APP) --yes || echo "  (app already gone — continuing)"; \
+	  echo "✓ Fly teardown complete"; \
+	fi
 
 takeover: fly-stop be-up ## Stop Fly, then start the local backend on the same Upstash
 	@echo "✓ Fly stopped, local backend up on :8001 — it now owns the Upstash keys"
@@ -151,5 +165,5 @@ prune: ## Remove THIS project's exited containers, dangling images & old build c
         fe-install fe-dev fe-build fe-preview fe-test dev down \
         tunnel-create tunnel-status tunnel-delete \
         deploy deploy-be deploy-fe deploy-dry vercel-check fly-check \
-        fly-stop fly-start fly-retire takeover \
+        fly-stop fly-start fly-destroy takeover \
         secrets deploy-be-secrets clear-cache quotes prune
