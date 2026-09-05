@@ -21,8 +21,13 @@ services:
     # poller: run ONE at a time, or two writers will clobber `bars:<date>`.
     env_file:
       - .env
-    volumes:
-      - ./:/app
+    # No bind mount: this used to be `volumes: [./:/app]` for edit-without-
+    # rebuild convenience, but a host bind mount is exactly what Docker
+    # Desktop's WSL2 bridge can lose track of after a Docker/WSL restart or a
+    # Windows sleep/resume — `docker restart` then fails with a stale
+    # "mount source path ... file exists" error. Removing it means a code
+    # change needs `make be-up` (rebuild) instead of a plain restart, but it
+    # takes this container out of that entire bug class.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=4).status==200 else 1)\""]
       interval: 15s
