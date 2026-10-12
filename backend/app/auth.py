@@ -17,6 +17,8 @@ both automatically by reading each token's `alg` header:
 No config switch is required — whichever scheme the project uses just works.
 """
 
+import hmac
+
 import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -110,3 +112,22 @@ async def require_pro(user: dict = Depends(get_current_user)) -> dict:
             status_code=403, detail="This feature requires a Pro subscription."
         )
     return {**user, "plan": plan}
+
+
+def require_premarket_access(
+    creds: HTTPAuthorizationCredentials = Depends(_bearer),
+) -> dict:
+    """Gate for /api/premarket: a service token OR a Supabase session token.
+
+    The static PREMARKET_API_TOKEN lets a sibling app call the endpoint
+    server-to-server; browsers send their Supabase JWT as for any other
+    protected route. Any logged-in user passes (it is free-tier data).
+    """
+    if creds is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    expected = settings.PREMARKET_API_TOKEN
+    if expected and hmac.compare_digest(
+        creds.credentials.encode(), expected.encode()
+    ):
+        return {"id": "service", "email": "", "fullName": "", "plan": "service"}
+    return get_current_user(creds)

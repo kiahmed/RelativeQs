@@ -255,6 +255,10 @@ class Settings:
     # dev/testing: when true the ribbon never auto-collapses off-hours (always
     # shows the full board regardless of market phase). Leave false in prod.
     PREMARKET_FORCE_OPEN: bool = os.getenv("PREMARKET_FORCE_OPEN", "false").lower() == "true"
+    # Static bearer token for server-to-server callers (e.g. the EdgeLane/Simmer
+    # overnight-movers import). /api/premarket accepts this OR a valid Supabase
+    # session token. Unset -> service-token access is disabled (JWT only).
+    PREMARKET_API_TOKEN: str = os.getenv("PREMARKET_API_TOKEN", "").strip()
 
 
 settings = Settings()

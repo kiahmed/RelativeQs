@@ -90,11 +90,13 @@ async def rotation_history(limit: Optional[int] = 30):
 
 
 @router.get("/premarket")
-async def premarket():
+async def premarket(_caller: dict = Depends(auth.require_premarket_access)):
     """Overnight / pre-market board — the day's biggest Nasdaq-100 movers, the
     overnight tape (US futures, Asia semis, Europe), and how each mover sits
     vs the tape and the crowd. Descriptive pre-open context; never feeds scoring.
-    Served from the service's own ~15-min in-process cache."""
+    Served from the service's own ~15-min in-process cache.
+
+    Requires a Supabase session token or the PREMARKET_API_TOKEN service token."""
     logger.info("[API] GET /premarket")
     return await market.fetch_premarket_board()
 

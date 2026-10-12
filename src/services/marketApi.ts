@@ -16,6 +16,7 @@ import {
   type PremarketBoard,
 } from '../data/marketSignals'
 import { BACKEND_URL } from '../config'
+import { useAuthStore } from '../store/useAuthStore'
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
@@ -79,7 +80,10 @@ export async function fetchAIDependency(): Promise<AIDependency | null> {
 /** Overnight / pre-market board — top movers + overnight tape (pre-open context). */
 export async function fetchPremarket(): Promise<PremarketBoard | null> {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/premarket`)
+    const token = useAuthStore.getState().token
+    const response = await fetch(`${BACKEND_URL}/api/premarket`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
     if (!response.ok) {
       console.error('Failed to fetch premarket board:', response.statusText)
       return null

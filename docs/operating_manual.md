@@ -465,7 +465,8 @@ pass, and tells you which of them is the broken link.
 ```bash
 make be-up        # start everything (backend + tunnel connector)
 make be-down      # stop everything
-make be-restart   # restart just the backend
+make be-restart   # restart just the backend (does NOT pick up code changes -
+                  # the code is baked into the image; use `make be-up` to rebuild)
 ```
 
 Restarting is safe. The public hostname lives in Cloudflare, not in the
@@ -495,6 +496,17 @@ hostname ever changes, the site keeps calling the old one until you rebuild:
 make tunnel-create   # re-point the tunnel and sync deploy/.env.production
 make deploy-fe       # rebuild and redeploy the frontend
 ```
+
+## Backlog / security checklist
+
+- [x] **`GET /api/premarket` is token-gated.** It requires either a Supabase
+  session bearer (the dashboard sends one; it is login-gated) or the static
+  `PREMARKET_API_TOKEN` from `backend/.env` for server-to-server callers. A
+  sister app (EdgeLane / Simmer) consumes it for its pre-open overnight-movers
+  import: set the same value as its bearer (tracked in `docs/simmer.md` ->
+  "Overnight movers - RelativeQs import"). Unset = service access disabled.
+  After setting it, recreate the container (`make be-up`) so `env_file` is
+  re-read.
 
 ---
 
