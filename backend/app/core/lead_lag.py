@@ -41,11 +41,13 @@ class LeadLagEngine:
     # ------------------------------------------------------------------ #
     # helpers                                                             #
     # ------------------------------------------------------------------ #
-    def _empty(self, status: str, bars_used: int = 0) -> Dict[str, Any]:
+    def _empty(self, status: str, bars_used: int = 0,
+               bar_minutes: int = 1) -> Dict[str, Any]:
         """A fully-populated result used when data is insufficient."""
         return {
             "status": status,
             "bars_used": int(bars_used),
+            "bar_minutes": int(bar_minutes),
             "window_start": "",
             "window_end": "",
             "target": self.target,
@@ -53,6 +55,7 @@ class LeadLagEngine:
             "leader": None,
             "confirmers": [],
             "diverging": [],
+            "decoupled": [],
         }
 
     @staticmethod
@@ -74,32 +77,76 @@ class LeadLagEngine:
         c = np.corrcoef(a, b)[0, 1]
         return float(c) if np.isfinite(c) else 0.0
 
+    @staticmethod
+    def detect_decoupling(current: Dict[str, Any], baseline: Dict[str, Any],
+                          usual_min: float = 0.5, drop_min: float = 0.3) -> list:
+        """Flag drivers that are USUALLY in sync with the target but have broken
+        ranks now: baseline contemporaneous corr >= usual_min and it dropped by
+        >= drop_min in the current window. The early-warning 'who broke ranks' read.
+        `current`/`baseline` are both compute() results at the same frame."""
+        if not current or not baseline:
+            return []
+        base_corr = {e["symbol"]: e.get("corr_at_zero", 0.0)
+                     for e in baseline.get("entries", [])}
+        out = []
+        for e in current.get("entries", []):
+            sym = e["symbol"]
+            usual = base_corr.get(sym)
+            if usual is None or usual < usual_min:
+                continue
+            now = e.get("corr_at_zero", 0.0)
+            if usual - now >= drop_min:
+                out.append({
+                    "symbol": sym,
+                    "usual_corr": float(usual),
+                    "now_corr": float(now),
+                    "drop": float(usual - now),
+                })
+        out.sort(key=lambda d: d["drop"], reverse=True)
+        return out
+
     # ------------------------------------------------------------------ #
     # main                                                                #
     # ------------------------------------------------------------------ #
-    def compute(self, bars: pd.DataFrame) -> Dict[str, Any]:
+    def compute(self, bars: pd.DataFrame, freq_minutes: int = 1,
+                max_lag: Optional[int] = None,
+                min_bars: Optional[int] = None,
+                bar_minutes: Optional[int] = None) -> Dict[str, Any]:
+        """Cross-correlation lead/lag. `freq_minutes` resamples the 1m bars to a
+        coarser frame (e.g. 5 or 15) where real leads emerge; lags are reported in
+        those minutes. For ALREADY-coarse bars (e.g. daily), pass freq_minutes=1
+        (no resample) and bar_minutes=1440 so a 1-bar lag reads as 1 day. Defaults
+        reproduce the original 1m behaviour."""
+        max_lag = int(max_lag if max_lag is not None else self.max_lag)
+        min_bars = int(min_bars if min_bars is not None else self.min_bars)
+        freq_minutes = max(1, int(freq_minutes))
+        # minutes-per-bar used for lag LABELLING (defaults to the resample freq)
+        label_minutes = int(bar_minutes if bar_minutes is not None else freq_minutes)
+
         if bars is None or getattr(bars, "empty", True):
-            return self._empty("no_data")
+            return self._empty("no_data", bar_minutes=label_minutes)
 
         try:
             close = bars.sort_index().ffill().dropna()
+            if freq_minutes > 1:
+                close = close.resample(f"{freq_minutes}min").last().ffill().dropna()
         except Exception:
             logger.warning("[LeadLagEngine] failed to clean bars")
-            return self._empty("no_data")
+            return self._empty("no_data", bar_minutes=label_minutes)
 
         if self.target not in close.columns:
             logger.warning("[LeadLagEngine] target %s missing from bars", self.target)
-            return self._empty("no_data", bars_used=len(close))
+            return self._empty("no_data", bars_used=len(close), bar_minutes=label_minutes)
 
         bars_used = len(close)
-        if bars_used < self.min_bars:
-            res = self._empty("warming_up", bars_used=bars_used)
+        if bars_used < min_bars:
+            res = self._empty("warming_up", bars_used=bars_used, bar_minutes=label_minutes)
             if bars_used:
                 res["window_start"] = self._iso(close.index[0])
                 res["window_end"] = self._iso(close.index[-1])
             return res
 
-        # 1m log returns
+        # log returns at the chosen frame
         rets = np.log(close).diff()
         tgt = rets[self.target]
 
@@ -110,7 +157,7 @@ class LeadLagEngine:
             s = rets[sym]
 
             corr_by_lag = {}
-            for k in range(0, self.max_lag + 1):
+            for k in range(0, max_lag + 1):
                 # S shifted forward by k => S leads the target by k minutes:
                 # we correlate S_returns[t-k] with target_returns[t].
                 aligned = pd.concat([s.shift(k), tgt], axis=1).dropna()
@@ -128,7 +175,7 @@ class LeadLagEngine:
             # "leading". argmax over k of corr_k.
             best_lag = 0
             best_corr = corr_by_lag.get(0, 0.0)
-            for k in range(1, self.max_lag + 1):
+            for k in range(1, max_lag + 1):
                 if corr_by_lag[k] > best_corr:
                     best_corr = corr_by_lag[k]
                     best_lag = k
@@ -162,6 +209,7 @@ class LeadLagEngine:
             entries.append({
                 "symbol": sym,
                 "best_lag": int(best_lag),
+                "lag_minutes": int(best_lag * label_minutes),
                 "best_corr": float(best_corr),
                 "corr_at_zero": float(corr_at_zero),
                 "beta": float(beta),
@@ -176,7 +224,7 @@ class LeadLagEngine:
             if e["role"] == "leader":
                 leader = {
                     "symbol": e["symbol"],
-                    "lag_minutes": e["best_lag"],
+                    "lag_minutes": int(e["best_lag"] * label_minutes),
                     "corr": e["best_corr"],
                     "beta": e["beta"],
                 }
@@ -188,6 +236,7 @@ class LeadLagEngine:
         result = {
             "status": "ok",
             "bars_used": int(bars_used),
+            "bar_minutes": int(label_minutes),
             "window_start": self._iso(close.index[0]),
             "window_end": self._iso(close.index[-1]),
             "target": self.target,
@@ -195,6 +244,7 @@ class LeadLagEngine:
             "leader": leader,
             "confirmers": confirmers,
             "diverging": diverging,
+            "decoupled": [],
         }
         logger.info(
             "[LeadLagEngine] bars=%d leader=%s confirmers=%d diverging=%d",

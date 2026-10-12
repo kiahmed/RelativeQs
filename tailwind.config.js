@@ -16,10 +16,19 @@ export default {
           '0%': { opacity: '0', transform: 'translateY(8px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
         },
+        'pulse-glow': {
+          '0%, 100%': {
+            boxShadow: '0 0 0 1px rgba(96,165,250,0.25), 0 0 18px -2px rgba(99,102,241,0.45)',
+          },
+          '50%': {
+            boxShadow: '0 0 0 1px rgba(96,165,250,0.5), 0 0 30px 2px rgba(99,102,241,0.7)',
+          },
+        },
       },
       animation: {
         shimmer: 'shimmer 1.6s infinite',
         'fade-up': 'fade-up 0.4s ease-out both',
+        'pulse-glow': 'pulse-glow 2.4s ease-in-out infinite',
       },
     },
   },

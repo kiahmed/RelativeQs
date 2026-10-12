@@ -4,12 +4,15 @@ type QQQScoreHandler = (payload: any) => void
 
 type PredictionHandler = (payload: any) => void
 
+type RotationHandler = (payload: any) => void
+
 export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
   let ws: WebSocket | null = null
   let reconnect = true
   let onSnapshot: SnapshotHandler | null = null
   let onQQQScore: QQQScoreHandler | null = null
   let onPrediction: PredictionHandler | null = null
+  let onRotation: RotationHandler | null = null
 
   function connect() {
     if (ws) return
@@ -30,6 +33,13 @@ export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
         }
         if (data?.type === 'prediction' && onPrediction) {
           onPrediction(data.payload)
+        }
+        if (data?.type === 'rotation' && onRotation) {
+          onRotation(data.payload)
+        }
+        // rotation may also ride along inside a snapshot payload
+        if (data?.type === 'snapshot' && data.payload?.rotation && onRotation) {
+          onRotation(data.payload.rotation)
         }
       } catch (e) {
         console.error('[backendClient] parse error', e)
@@ -72,6 +82,10 @@ export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
     onPrediction = cb
   }
 
+  function onRotationCb(cb: RotationHandler | null) {
+    onRotation = cb
+  }
+
   return {
     connect,
     disconnect,
@@ -79,5 +93,6 @@ export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
     onSnapshot: onSnapshotCb,
     onQQQScore: onQQQScoreCb,
     onPrediction: onPredictionCb,
+    onRotation: onRotationCb,
   }
 }

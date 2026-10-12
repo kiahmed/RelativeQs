@@ -5,33 +5,56 @@
 # snapshot:latest / qqq_score:latest within one cycle (~POLL_INTERVAL_SECONDS),
 # and history:* entries are refetched from the data provider on the next call.
 #
+# Redis is the managed Upstash instance the backend (local or Fly) points at
+# via REDIS_URL -- there's no local Redis container to exec into anymore.
+#
 # usage:
 #   ./clear-redis-cache.sh           # delete app keys (snapshot, qqq_score, history)
 #   ./clear-redis-cache.sh --all     # flush the entire db
 #
 # env overrides:
-#   REDIS_CONTAINER  docker container name (default: postiz-redis)
-#   REDIS_DB         redis db number       (default: 1, matches docker-compose REDIS_URL)
+#   REDIS_URL  redis connection string (default: read from backend/.env;
+#              an already-exported REDIS_URL takes precedence over the file)
 
 set -euo pipefail
 
-REDIS_CONTAINER="${REDIS_CONTAINER:-postiz-redis}"
-REDIS_DB="${REDIS_DB:-1}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_ENV="$SCRIPT_DIR/../backend/.env"
 
-rcli() {
-  docker exec "$REDIS_CONTAINER" redis-cli -n "$REDIS_DB" "$@"
-}
+if [ -z "${REDIS_URL:-}" ] && [ -f "$BACKEND_ENV" ]; then
+  REDIS_URL="$(grep -E '^REDIS_URL=' "$BACKEND_ENV" | tail -n1 | cut -d'=' -f2-)"
+  # strip matching surrounding quotes, if any
+  REDIS_URL="${REDIS_URL%\"}"; REDIS_URL="${REDIS_URL#\"}"
+  REDIS_URL="${REDIS_URL%\'}"; REDIS_URL="${REDIS_URL#\'}"
+fi
 
-if ! docker ps --format '{{.Names}}' | grep -qx "$REDIS_CONTAINER"; then
-  echo "error: redis container '$REDIS_CONTAINER' is not running" >&2
+if [ -z "${REDIS_URL:-}" ]; then
+  echo "error: REDIS_URL is not set and not found in $BACKEND_ENV" >&2
+  echo "set REDIS_URL (the Upstash URL) in backend/.env, or export it before running this script" >&2
   exit 1
 fi
+
+# Never print the URL itself (it carries a password) -- only a redacted host.
+redis_host="$(printf '%s' "$REDIS_URL" | sed -E 's#^[A-Za-z]+://([^@/]*@)?##; s#[/?].*$##')"
+
+if command -v redis-cli >/dev/null 2>&1; then
+  rcli() {
+    redis-cli -u "$REDIS_URL" "$@"
+  }
+else
+  rcli() {
+    docker run --rm redis:7-alpine redis-cli -u "$REDIS_URL" "$@"
+  }
+fi
+
+echo "target: $redis_host"
 
 # red warning + explicit confirmation before touching anything
 RED='\033[0;31m'
 NC='\033[0m'
 printf "${RED}WARNING: this will delete ALL cached market data for ALL live users.${NC}\n"
 printf "${RED}Dashboards may show stale/empty data until the next poll cycle repopulates the cache.${NC}\n"
+printf "${RED}This is the shared Upstash instance -- local and any running cloud poller both read it.${NC}\n"
 read -r -p "Are you sure? [y/N] " answer
 case "$answer" in
   [yY]|[yY][eE][sS]) ;;
@@ -40,7 +63,7 @@ esac
 
 if [ "${1:-}" = "--all" ]; then
   rcli FLUSHDB > /dev/null
-  echo "flushed redis db $REDIS_DB"
+  echo "flushed redis at $redis_host"
   exit 0
 fi
 

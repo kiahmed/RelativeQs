@@ -1,10 +1,11 @@
 import asyncio
 import os
 import random
+import threading
 import time
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -22,6 +23,8 @@ from app.core.correlation_regime import CorrelationRegimeEngine
 from app.core.stability import StabilityEngine
 from app.core.hit_rate import HitRateEngine
 from app.core.breadth import BreadthEngine
+from app.core.ai_dependency import AIDependencyEngine
+from app.core.premarket import PremarketBoard
 from app.services.holdings import HoldingsProvider
 
 logger = logging.getLogger(__name__)
@@ -30,6 +33,14 @@ try:
     import yfinance as yf
 except ImportError:
     yf = None
+
+# yf.download is NOT thread-safe: concurrent calls (run via asyncio.to_thread)
+# with different intervals clobber each other's state, so a "1d" daily pull can
+# come back as 1m intraday data. This process-wide lock serializes every
+# download so the AI-dependency daily fetch can't be corrupted by a concurrent
+# intraday/breadth fetch. Module-level => shared across all MarketDataService
+# instances (the poll loop's and the API's).
+_YF_DOWNLOAD_LOCK = threading.Lock()
 
 class MarketDataService:
     """Market data service with both mock and Yahoo Finance adapters.
@@ -51,6 +62,27 @@ class MarketDataService:
         # (period, interval) of the remembered frame — the throttle only reuses
         # it for an identical request so a 7d backfill never gets served a 1d frame.
         self._last_yahoo_params: tuple = (None, None)
+        # AI-capex dependency is a slow DAILY metric — cache it in-process and
+        # only refetch daily bars every AI_DEPENDENCY_REFRESH_SECONDS so the
+        # ~12s intraday poll never re-pulls 2y of daily history.
+        self._ai_dep_cache: Optional[Dict[str, Any]] = None
+        self._ai_dep_fetched: float = 0.0
+        # Per-timeframe lead/lag streak state {tf: {symbol, lag_minutes, count,
+        # confirmed, window_end}} — promotes a lead only after it recurs on N
+        # consecutive new bars (see LEAD_LAG_STREAK_MIN).
+        self._leadlag_streak: Dict[str, Dict[str, Any]] = {}
+        # cached daily-bar frame for the universe (cross-day lead/lag) — slow
+        # metric, refetched on the AI-dependency cadence so the poll never repulls.
+        self._daily_universe_cache: Optional[pd.DataFrame] = None
+        self._daily_universe_fetched: float = 0.0
+        # cross-sector rotation-flow read (1m OHLCV) — cached in-process for ~one
+        # poll interval so the loop and on-demand API don't both hammer yfinance.
+        self._rotation_cache: Optional[Dict[str, Any]] = None
+        self._rotation_fetched: float = 0.0
+        # overnight / pre-market board — refreshed on a slow (~15 min) cadence
+        # since it's pre-open situational context, not part of the intraday poll.
+        self._premarket_cache: Optional[Dict[str, Any]] = None
+        self._premarket_fetched: float = 0.0
 
     def _resolve_provider(self) -> str:
         provider = (self.mode or settings.DATA_PROVIDER or os.getenv("DATA_PROVIDER", "mock")).lower()
@@ -555,6 +587,292 @@ class MarketDataService:
 
         return engine.compute(opens, lasts, weights)
 
+    async def fetch_ai_dependency(self, force: bool = False) -> Dict[str, Any]:
+        """AI-capex dependency index (structural, daily). Cached in-process and
+        only recomputed every AI_DEPENDENCY_REFRESH_SECONDS — it is a slow daily
+        metric and must never be tied to the intraday poll cadence or thesis."""
+        engine = AIDependencyEngine()
+        if not getattr(settings, "AI_DEPENDENCY_ENABLED", True):
+            return engine._empty("no_data")
+
+        now = time.monotonic()
+        if (not force and self._ai_dep_cache is not None
+                and now - self._ai_dep_fetched < settings.AI_DEPENDENCY_REFRESH_SECONDS):
+            return self._ai_dep_cache
+
+        symbols = engine.all_symbols()
+        period = getattr(settings, "AI_DEPENDENCY_PERIOD", "2y")
+        try:
+            closes = await asyncio.to_thread(
+                self._download_intraday_history, symbols, period, "1d"
+            )
+        except Exception:
+            logger.exception("[AIDEP] daily fetch failed")
+            return self._ai_dep_cache or engine._empty("warming_up")
+
+        if closes is None or getattr(closes, "empty", True):
+            return self._ai_dep_cache or engine._empty("warming_up")
+
+        # Sanity guard: a "2y" daily pull is ~500 rows. Far more = we were handed
+        # intraday data (a thread-safety clobber). Reject rather than memoize
+        # garbage for an hour; serve the last good value instead.
+        if len(closes) > 800:
+            logger.warning("[AIDEP] daily pull looks intraday (%d rows) — rejecting",
+                           len(closes))
+            return self._ai_dep_cache or engine._empty("warming_up")
+
+        result = engine.compute(closes)
+        self._ai_dep_cache = result
+        self._ai_dep_fetched = now
+        return result
+
+    async def _get_daily_universe_bars(self) -> Optional[pd.DataFrame]:
+        """Daily close bars for the ETF universe (cross-day lead/lag). Cached in
+        process and refetched on the AI-dependency cadence — it's a slow daily
+        frame, no need to repull every poll cycle."""
+        now = time.monotonic()
+        refresh = int(getattr(settings, "AI_DEPENDENCY_REFRESH_SECONDS", 3600))
+        if (self._daily_universe_cache is not None
+                and now - self._daily_universe_fetched < refresh):
+            return self._daily_universe_cache
+        try:
+            df = await asyncio.to_thread(
+                self._download_intraday_history, list(settings.ETF_UNIVERSE), "1y", "1d"
+            )
+        except Exception:
+            logger.exception("[DAILY-LL] universe daily fetch failed")
+            return self._daily_universe_cache
+        if df is None or getattr(df, "empty", True) or len(df) > 800:
+            return self._daily_universe_cache
+        self._daily_universe_cache = df
+        self._daily_universe_fetched = now
+        return df
+
+    async def fetch_premarket_board(self, force: bool = False) -> Dict[str, Any]:
+        """Overnight / pre-market board (descriptive — never feeds scoring).
+        Cached in-process and refreshed every PREMARKET_REFRESH_SECONDS so it is
+        decoupled from the intraday poll cadence."""
+        board = PremarketBoard(
+            top_n=int(getattr(settings, "PREMARKET_TOP_N", 8)),
+            min_gap=float(getattr(settings, "PREMARKET_MIN_GAP", 0.01)),
+            force_open=bool(getattr(settings, "PREMARKET_FORCE_OPEN", False)),
+        )
+        if not getattr(settings, "PREMARKET_ENABLED", True):
+            return board._empty("no_data")
+
+        now = time.monotonic()
+        refresh = int(getattr(settings, "PREMARKET_REFRESH_SECONDS", 900))
+        if (not force and self._premarket_cache is not None
+                and now - self._premarket_fetched < refresh):
+            return self._premarket_cache
+
+        asof = datetime.now(ZoneInfo("America/New_York"))
+        weights = HoldingsProvider().get_constituents()
+        universe = list(weights.keys())
+        if not universe:
+            return self._premarket_cache or board._empty("warming_up", asof.isoformat())
+        fut = ["NQ=F", "ES=F"]
+        asia = list(getattr(settings, "PREMARKET_ASIA_BASKET",
+                            ["2330.TW", "005930.KS", "000660.KS", "8035.T", "6857.T"]))
+        europe = list(getattr(settings, "PREMARKET_EUROPE", ["ASML.AS"]))
+
+        try:
+            intraday = await asyncio.to_thread(
+                self._download_intraday_history, universe + fut, "2d", "5m", True)
+            odaily = await asyncio.to_thread(
+                self._download_intraday_history, asia + europe, "5d", "1d", False)
+        except Exception:
+            logger.exception("[PREMKT] fetch failed")
+            return self._premarket_cache or board._empty("warming_up", asof.isoformat())
+
+        if intraday is None or getattr(intraday, "empty", True):
+            return self._premarket_cache or board._empty("warming_up", asof.isoformat())
+
+        quotes = self._extract_premarket_quotes(intraday, universe + fut)
+        tape = {
+            "nq": self._gap_from_quote(quotes.get("NQ=F")),
+            "es": self._gap_from_quote(quotes.get("ES=F")),
+            "asia": self._daily_basket_return(odaily, asia),
+            "europe": self._daily_basket_return(odaily, europe),
+        }
+        mover_quotes = {s: q for s, q in quotes.items() if s in weights}
+        result = board.compute(mover_quotes, weights, tape, pd.Timestamp(asof))
+        self._premarket_cache = result
+        self._premarket_fetched = now
+        return result
+
+    def _extract_premarket_quotes(self, cl, symbols) -> Dict[str, Dict[str, float]]:
+        """From a 5m Close frame (cols=symbols), pull per-symbol prev RTH close,
+        today's reference price (settled 09:30 open once the bell rings, else the
+        latest pre-market print), and the pre-market early/late prints."""
+        ET = ZoneInfo("America/New_York")
+        idx = cl.index
+        idx = idx.tz_localize("UTC") if idx.tz is None else idx
+        cl = cl.copy(); cl.index = idx.tz_convert(ET)
+        dates = sorted(set(cl.index.normalize()))
+        if not dates:
+            return {}
+        today = dates[-1]
+        prior = [d for d in dates if d < today]
+        t930 = pd.Timestamp("09:30").time(); t1600 = pd.Timestamp("16:00").time()
+        out: Dict[str, Dict[str, float]] = {}
+        for sym in symbols:
+            if sym not in cl.columns:
+                continue
+            s = cl[sym].dropna()
+            if s.empty:
+                continue
+            prev_close = None
+            for d in reversed(prior):
+                rth = s[(s.index.normalize() == d) & (s.index.time >= t930) & (s.index.time <= t1600)]
+                if len(rth):
+                    prev_close = float(rth.iloc[-1]); break
+            if prev_close is None:
+                before = s[s.index.normalize() < today]
+                prev_close = float(before.iloc[-1]) if len(before) else None
+            td = s[s.index.normalize() == today]
+            if td.empty or not prev_close:
+                continue
+            rth_today = td[td.index.time >= t930]
+            opened = len(rth_today) > 0
+            # ref = settled 09:30 open once the bell rings, else latest pre-market
+            ref = float(rth_today.iloc[0]) if opened else float(td.iloc[-1])
+            pm = td[td.index.time < t930]
+            out[sym] = {
+                "prev_close": prev_close, "ref": ref,
+                "last": float(td.iloc[-1]), "opened": opened,
+                "pm_early": float(pm.iloc[0]) if len(pm) else None,
+                "pm_late": float(pm.iloc[-1]) if len(pm) else None,
+            }
+        return out
+
+    @staticmethod
+    def _gap_from_quote(q) -> Optional[float]:
+        if not q or not q.get("prev_close") or not q.get("ref"):
+            return None
+        return q["ref"] / q["prev_close"] - 1.0
+
+    @staticmethod
+    def _daily_basket_return(daily, syms) -> Optional[float]:
+        """Mean most-recent daily close-to-close return across a basket (the
+        overnight read for Asia/Europe sessions that closed before the US open)."""
+        if daily is None or getattr(daily, "empty", True):
+            return None
+        rets = []
+        for s in syms:
+            if s in getattr(daily, "columns", []):
+                ser = daily[s].dropna()
+                if len(ser) >= 2 and ser.iloc[-2] > 0:
+                    rets.append(float(ser.iloc[-1] / ser.iloc[-2] - 1.0))
+        return float(np.mean(rets)) if rets else None
+
+    def _empty_rotation(self, session: str) -> Dict[str, Any]:
+        """Contract-shaped placeholder when no OHLCV is available yet."""
+        from app.core import rotation as rot
+        windows = {
+            f"{m}m": {
+                "regime": "warming_up",
+                "subject_return": None,
+                "subject_dvol_surge": 1.0,
+                "rows": [],
+                "summary": {"direction": "flat", "into": [], "from": [],
+                            "unaccounted": False, "text": "Warming up — no data yet."},
+            }
+            for m in rot.WINDOWS_MIN
+        }
+        return {
+            "subject": rot.SUBJECT, "universe": [],
+            "asof": datetime.now(timezone.utc).isoformat(),
+            "session": session, "windows": windows,
+        }
+
+    async def fetch_rotation(self, use_cache: bool = True,
+                             session: str = "live") -> Dict[str, Any]:
+        """Cross-sector rotation flow from 1m OHLCV over today's session.
+
+        The shared `_fetch_history_from_provider` path is close-only (volume is
+        dropped), and rotation NEEDS dollar-volume, so this pulls its own OHLCV
+        via `rotation.fetch_ohlcv` (yfinance). Cached in-process for ~one poll
+        interval so the loop and on-demand API calls don't both hit the provider.
+        Adds `asof` (UTC) and `session` to the pure compute_rotation dict.
+        """
+        from app.core import rotation as rot
+        now = time.monotonic()
+        ttl = float(getattr(settings, "POLL_INTERVAL_SECONDS", 30.0))
+        if (use_cache and self._rotation_cache is not None
+                and self._rotation_cache.get("session") == session
+                and now - self._rotation_fetched < ttl):
+            return self._rotation_cache
+        try:
+            close, volume = await asyncio.to_thread(
+                rot.fetch_ohlcv, rot.ROTATION_UNIVERSE, "1d", "1m"
+            )
+        except Exception:
+            logger.exception("[ROTATION] 1m OHLCV fetch failed")
+            return self._rotation_cache or self._empty_rotation(session)
+        if close is None or getattr(close, "empty", True):
+            logger.warning("[ROTATION] no 1m OHLCV returned")
+            return self._rotation_cache or self._empty_rotation(session)
+        result = rot.compute_rotation(close, volume)
+        result["asof"] = datetime.now(timezone.utc).isoformat()
+        result["session"] = session
+        self._rotation_cache = result
+        self._rotation_fetched = now
+        logger.info("[ROTATION] computed session=%s universe=%d",
+                    session, len(result.get("universe", [])))
+        return result
+
+    async def fetch_rotation_daily(self) -> Dict[str, Any]:
+        """Coarse daily-bar rotation read (windows in DAYS) — the settled
+        cross-check for the after-hours backtest. Not cached; called once/day."""
+        from app.core import rotation as rot
+        try:
+            close, volume = await asyncio.to_thread(
+                rot.fetch_ohlcv, rot.ROTATION_UNIVERSE, "10d", "1d"
+            )
+        except Exception:
+            logger.exception("[ROTATION] daily OHLCV fetch failed")
+            return self._empty_rotation("daily")
+        if close is None or getattr(close, "empty", True):
+            return self._empty_rotation("daily")
+        result = rot.compute_rotation(close, volume, windows=(1, 2, 5))
+        result["asof"] = datetime.now(timezone.utc).isoformat()
+        result["session"] = "daily"
+        return result
+
+    def _update_leadlag_streak(self, tf: str, leader: Optional[Dict[str, Any]],
+                               window_end: Optional[str], freq_minutes: int) -> Dict[str, Any]:
+        """Advance the consecutive-occurrence streak for a timeframe's leader.
+
+        Counts a new occurrence only when a NEW bar has formed (window_end moved),
+        so the streak measures real repetition across bars — not poll redundancy.
+        Same leader (within one bar of lag tolerance) on consecutive new bars
+        increments; a change or no-leader resets. Confirmed at LEAD_LAG_STREAK_MIN.
+        """
+        min_streak = int(getattr(settings, "LEAD_LAG_STREAK_MIN", 3))
+        prev = self._leadlag_streak.get(tf) or {}
+
+        # no new bar since last check → hold the current streak unchanged
+        if window_end and prev.get("window_end") == window_end:
+            return {k: prev[k] for k in
+                    ("symbol", "lag_minutes", "count", "confirmed")
+                    if k in prev} or {
+                        "symbol": None, "lag_minutes": 0, "count": 0, "confirmed": False}
+
+        if leader and leader.get("symbol"):
+            sym = leader["symbol"]
+            lag = int(leader.get("lag_minutes") or 0)
+            same = (prev.get("symbol") == sym
+                    and abs(int(prev.get("lag_minutes") or 0) - lag) <= freq_minutes)
+            count = (int(prev.get("count") or 0) + 1) if same else 1
+            state = {"symbol": sym, "lag_minutes": lag, "count": count,
+                     "confirmed": count >= min_streak}
+        else:
+            state = {"symbol": None, "lag_minutes": 0, "count": 0, "confirmed": False}
+
+        self._leadlag_streak[tf] = {**state, "window_end": window_end}
+        return state
+
     async def fetch_prediction(self, history_store=None) -> Dict[str, Any]:
         """Compute the intraday QQQ prediction from accumulated session bars.
 
@@ -591,6 +909,50 @@ class MarketDataService:
         score = IntradayScoreEngine().compute(bars, lead_lag)
         projection = ProjectionEngine().compute(bars, lead_lag, score)
 
+        # Coarser-timeframe lead/lag (5m / 15m) — real leads emerge above 1m;
+        # each also flags drivers that USUALLY track QQQ but broke ranks now
+        # (decoupling) vs a recent multi-day baseline. Default UI frame is 15m.
+        lead_lag_tf: Dict[str, Any] = {}
+        try:
+            ll_engine = LeadLagEngine()
+            tf_baseline = None
+            if history_store is not None:
+                try:
+                    tf_baseline = await history_store.get_recent_bars()
+                except Exception:
+                    tf_baseline = None
+            for key, fm, mlag, mbars in (("5min", 5, 3, 18), ("15min", 15, 2, 8)):
+                cur = ll_engine.compute(bars, freq_minutes=fm, max_lag=mlag, min_bars=mbars)
+                if tf_baseline is not None and not getattr(tf_baseline, "empty", True):
+                    base = ll_engine.compute(tf_baseline, freq_minutes=fm,
+                                             max_lag=mlag, min_bars=mbars)
+                    cur["decoupled"] = ll_engine.detect_decoupling(cur, base)
+                # streak filter: only confirm a leader once it recurs on N new bars
+                streak = self._update_leadlag_streak(key, cur.get("leader"),
+                                                     cur.get("window_end"), fm)
+                cur["streak"] = streak
+                cur["confirmed_leader"] = cur.get("leader") if streak["confirmed"] else None
+                lead_lag_tf[key] = cur
+
+            # Daily / cross-day frame — measured over ~1y of daily bars, where a
+            # real multi-day lead is most likely. The measurement already spans
+            # months, so it's self-confirming (no live streak wait); bar=1 day.
+            daily_bars = await self._get_daily_universe_bars()
+            if daily_bars is not None and not getattr(daily_bars, "empty", True):
+                d = ll_engine.compute(daily_bars, freq_minutes=1, max_lag=5,
+                                      min_bars=30, bar_minutes=1440)
+                d["confirmed_leader"] = d.get("leader")
+                d["streak"] = {
+                    "symbol": (d.get("leader") or {}).get("symbol"),
+                    "lag_minutes": (d.get("leader") or {}).get("lag_minutes", 0),
+                    "count": int(d.get("bars_used", 0)),
+                    "confirmed": d.get("leader") is not None,
+                }
+                lead_lag_tf["daily"] = d
+        except Exception:
+            logger.exception("[PREDICT] lead_lag_tf failed; using empty")
+            lead_lag_tf = {}
+
         # --- Phase 2 value features (each guarded; degrade to the engine's own
         # warming_up shape rather than throwing). ---
         try:
@@ -625,8 +987,13 @@ class MarketDataService:
                 logger.exception("[PREDICT] stability failed; using warming_up")
             try:
                 recent = await history_store.get_recent_bars()
+                # a CONFIRMED (streak) leader takes priority — hit-rate then scores
+                # follow-through on the repeating lead; otherwise fall back to the
+                # measured leader so the continuation stat stays available.
+                confirmed = (lead_lag_tf.get("15min") or {}).get("confirmed_leader")
+                hit_lead = {"leader": confirmed} if confirmed else lead_lag
                 hit_rate = HitRateEngine().compute(
-                    recent if recent is not None else bars, lead_lag
+                    recent if recent is not None else bars, hit_lead
                 )
             except Exception:
                 logger.exception("[PREDICT] hit_rate failed; using warming_up")
@@ -638,6 +1005,13 @@ class MarketDataService:
             logger.exception("[PREDICT] breadth failed; using no_data")
             breadth = BreadthEngine()._empty("no_data")
 
+        # AI-capex dependency — structural/daily, cached in-process (cheap here).
+        try:
+            ai_dependency = await self.fetch_ai_dependency()
+        except Exception:
+            logger.exception("[PREDICT] ai_dependency failed; using warming_up")
+            ai_dependency = AIDependencyEngine()._empty("warming_up")
+
         prediction = {
             "timestamp": int(time.time()),
             "status": lead_lag["status"],
@@ -645,6 +1019,7 @@ class MarketDataService:
             "universe": list(settings.ETF_UNIVERSE),
             "target": settings.PREDICTION_TARGET,
             "lead_lag": lead_lag,
+            "lead_lag_tf": lead_lag_tf,
             "score": score,
             "projection": projection,
             "attribution": attribution,
@@ -653,6 +1028,7 @@ class MarketDataService:
             "stability": stability,
             "hit_rate": hit_rate,
             "breadth": breadth,
+            "ai_dependency": ai_dependency,
         }
         logger.info(
             "[PREDICT] status=%s bars=%d verdict=%s direction=%s",
@@ -684,20 +1060,23 @@ class MarketDataService:
             "provider": self._resolve_provider(),
         }
 
-    def _download_intraday_history(self, symbols: List[str], period: str = "7d", interval: str = "1m"):
-        prepost = self._should_fetch_prepost()
+    def _download_intraday_history(self, symbols: List[str], period: str = "7d", interval: str = "1m",
+                                   prepost: Optional[bool] = None):
+        if prepost is None:
+            prepost = self._should_fetch_prepost()
         if prepost:
             logger.info("[YAHOO] Extended-hours window active, requesting pre/post market bars")
-        raw = yf.download(
-            tickers=symbols,
-            period=period,
-            interval=interval,
-            prepost=prepost,
-            auto_adjust=True,
-            progress=False,
-            threads=False,
-            group_by="column",
-        )
+        with _YF_DOWNLOAD_LOCK:
+            raw = yf.download(
+                tickers=symbols,
+                period=period,
+                interval=interval,
+                prepost=prepost,
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+                group_by="column",
+            )
         if raw is None or raw.empty:
             return None
         if isinstance(raw.columns, pd.MultiIndex):
@@ -714,15 +1093,16 @@ class MarketDataService:
         return close
 
     def _download_history(self, symbols: List[str]):
-        raw = yf.download(
-            tickers=symbols,
-            period="90d",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=False,
-            group_by="column",
-        )
+        with _YF_DOWNLOAD_LOCK:
+            raw = yf.download(
+                tickers=symbols,
+                period="90d",
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+                group_by="column",
+            )
         if raw is None or raw.empty:
             return None
         if isinstance(raw.columns, pd.MultiIndex):

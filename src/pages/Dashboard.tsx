@@ -8,13 +8,17 @@ import {
   Tooltip,
   XAxis,
   YAxis,
+  Area,
+  AreaChart,
+  ReferenceDot,
 } from 'recharts'
 import { useAuthStore } from '../store/useAuthStore'
 import { useMarketStore } from '../store/useMarketStore'
-import { deriveStabilityBadge, deriveHitRate } from '../data/marketSignals'
 import { BACKEND_URL, POLL_INTERVAL_MS } from '../config'
 import ProGate from '../components/ProGate'
 import AlertToggle from '../components/AlertToggle'
+import RotationFlow from '../components/RotationFlow'
+import PreMarketRibbon from '../components/PreMarketRibbon'
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -89,6 +93,42 @@ function Card({ children, className = '' }: { children: ReactNode; className?: s
     </div>
   )
 }
+
+/** small colour-key legend pinned to the bottom of a card */
+function CardLegend({ items, note }: { items: { label: string; cls: string }[]; note?: string }) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-800/80 pt-2.5 text-[0.7rem] text-slate-400">
+      {items.map((it) => (
+        <span key={it.label} className="inline-flex items-center gap-1.5">
+          <span className={`h-2 w-2 rounded-full ${it.cls}`} />
+          {it.label}
+        </span>
+      ))}
+      {note && <span className="ml-auto text-slate-500">{note}</span>}
+    </div>
+  )
+}
+
+const VERDICT_LEGEND = [
+  { label: 'Continue', cls: 'bg-emerald-400' },
+  { label: 'Stall', cls: 'bg-amber-400' },
+  { label: 'Fragile', cls: 'bg-rose-400' },
+]
+const CONFIRM_LEGEND = [
+  { label: 'Confirmed', cls: 'bg-emerald-400' },
+  { label: 'Unconfirmed', cls: 'bg-amber-400' },
+  { label: 'Fragile', cls: 'bg-rose-400' },
+]
+const REGIME_LEGEND = [
+  { label: 'Coupled', cls: 'bg-emerald-400' },
+  { label: 'Transitional', cls: 'bg-amber-400' },
+  { label: 'Fragmented', cls: 'bg-rose-400' },
+]
+const BREADTH_LEGEND = [
+  { label: 'Broad', cls: 'bg-emerald-400' },
+  { label: 'Mixed', cls: 'bg-amber-400' },
+  { label: 'Narrow', cls: 'bg-rose-400' },
+]
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
@@ -178,36 +218,38 @@ function LabeledSection({
 
 /* tooltip copy — what each card shows and how to read it */
 const TIPS = {
-  regime:
-    'Is tech risk-on or risk-off? Compares QQQ (Nasdaq-100) to its 200-day average price. RISK-ON = price above trend (historically stronger returns), RISK-OFF = below trend (higher drawdown risk). Use it as a risk dial for how aggressive to be on tech — not as a buy/sell signal.',
   relativeStrength:
-    'Which broadening sector (XLY Consumer, XLF Financials) is trading strongest versus its own recent trend. Above 1.00x = outperforming its trend, meaning the rally is spreading beyond tech. This is different from the Lead/Lag card, which compares momentum between the tech leaders (SMH vs XLK).',
+    'The sector that\'s moved up the most in the last 30 minutes. Green = gaining, red = fading.',
   health:
-    'A 0–100 composite of the measured rotation read: directional conviction (probability up), participation breadth (share of the universe with positive momentum) and fragility. 75+ = broad, healthy participation; below 50 = narrow, fragile participation. The higher the score, the more you can trust a QQQ move. (This is about how *broad* the move is — distinct from the Lead/Lag card, which is about *timing*.)',
+    'A 0–100 score for how broad and healthy the move under QQQ is. Higher = more sectors are backing it, so the move is more trustworthy. Below 50 = narrow and shaky.',
   fragility:
-    'Flags when QQQ strength is masking weakness underneath — e.g. consumer or industrial sectors lagging while QQQ rises. More warnings = a move that is more likely to reverse.',
+    'How much hidden weakness is under the move. LOW = well supported. HIGH = the surface looks strong but it\'s weak underneath, so it\'s more likely to reverse.',
   leadLagScore:
-    'Overall direction from the QQQ signal engine, combining leader momentum (XLK/SMH), broadening (XLY/XLF) and confirmation (XLI/IWM/XLE). Probability above 50% leans bullish, below 50% leans bearish.',
+    'A quick bullish / bearish read on where QQQ is leaning right now, with the chance it heads up.',
+  aiDependency:
+    'How much of QQQ\'s day-to-day move now comes from the AI build-out — memory, optics, networking, power and grid. The % is today\'s reading, the arrow shows if it\'s rising or falling versus a month ago, and the bars show which area QQQ leans on most. A big-picture trend, separate from the live intraday signals.',
+  aiWindow:
+    'How far back to measure which bottleneck QQQ is leaning on. Shorter windows catch recent shifts; longer ones show the bigger trend. 2 weeks is the floor — anything shorter is too few days to be reliable, so it gets noisy.',
   leadLagDetect:
-    'Which sector ETF is measured to move BEFORE QQQ this session, and by how many minutes. The leader, lag and correlation are computed from intraday cross-correlation across the whole ETF universe — not hardcoded. While the engine is gathering enough 1-minute bars it shows "Warming up".',
+    'Which sector reliably moves BEFORE QQQ, measured on 15-min (or 5-min) bars. A lead is only reported once it REPEATS on 3 bars in a row — so most of the time it honestly says "no repeating lead." "Broke ranks" flags a sector that usually moves with QQQ but just decoupled. The hit-rate below scores follow-through on the confirmed lead.',
   projection:
-    'A short-horizon read on where QQQ is headed, built from the measured leader\'s recent move (scaled by its correlation and beta) plus the composite rotation score. Shows the verdict (continue / stall / fragile), a projected price with an uncertainty band, direction and confidence. Warming up until enough session bars accumulate.',
+    'Where QQQ may be headed over the next few minutes, with a likely price range and whether the move should continue, stall, or is fragile.',
   attribution:
-    'Data-driven attribution of the current QQQ move to the engines underneath it (semis, software, mega-cap). A multivariate regression of QQQ returns on each driver gives its share of the move; "explained" is how much of QQQ the drivers account for, the rest is residual. This is measured, not index weights.',
+    'What\'s pushing QQQ right now — how much of its move comes from semis, software and mega-caps. "Explained" is how much these account for; the rest is everything else.',
   confirmation:
-    'The pre-trade check. CONFIRMED = QQQ is moving with broad sector participation and the leaders agree — the move is backed. UNCONFIRMED = only a few sectors are participating, fade risk. FRAGILE = internal fragility is high, treat any move with caution.',
+    'A quick pre-trade check. CONFIRMED = the move has broad sector backing. UNCONFIRMED = only a few sectors are in, so fade risk. FRAGILE = shaky underneath, trade with caution.',
   correlationRegime:
-    'Whether the tech sectors are moving together right now — the regime read for QQQ. COUPLED = high average pairwise correlation, so lead/lag and rotation signals are meaningful. FRAGMENTED = sectors are doing their own thing, treat lead/lag as noise today. TRANSITIONAL = in between. The rolling-correlation chart below visualises the same thing over time.',
+    'Whether the tech sectors are moving together right now. Together = the lead/lag and rotation signals are reliable. Doing their own thing = treat those signals as noise today.',
   stability:
-    'Cross-session check on whether the measured leader actually persists. TRADEABLE = the same leader has led across recent sessions at a consistent lag. UNSTABLE = the leader keeps changing. GATHERING = not enough sessions collected yet.',
+    'Whether the same sector keeps leading day after day. TRADEABLE = a consistent leader. UNSTABLE = it keeps changing. GATHERING = not enough sessions yet.',
   hitRate:
-    'How often QQQ actually followed the leader\'s move, measured from stored bars. The horizon is auto-tied to the measured lead by default; toggle Auto off to inspect fixed horizons. Compare the hit-rate to the naive baseline — a positive edge is what matters.',
+    'How often QQQ actually followed the leader in the past. Compare it to the baseline — being above it is what counts.',
   rollingCorr:
-    'How tightly QQQ tracks XLK and SMH over a rolling window (1.0 = moving in lock-step). Falling correlation means leadership is fragmenting — often an early warning of a regime change.',
+    'How closely QQQ tracks XLK and SMH over time (1.0 = moving in lock-step). Falling = leadership is breaking down, often an early warning.',
   breadth:
-    'Real participation measured from QQQ\'s ~100 underlying stocks. EQUAL-WEIGHT = how many names are advancing (true breadth). CAP-WEIGHT = how much of the index weight is advancing (is the move real for QQQ, which is top-heavy). Cap far above equal = a few mega-caps carrying a narrow tape; equal above cap = broad strength the giants are lagging.',
+    'How many of QQQ\'s ~100 stocks are rising. Equal-weight = how many names are up. Cap-weight = whether the big names are doing the lifting. Cap well above equal = a few giants carrying a narrow market; equal above cap = broad strength.',
   signalUniverse:
-    'Per-ETF live stats: daily change, momentum (0–10), relative strength (RS) vs its own trend, and spread divergence vs industrials. Use it to see which sectors confirm — or contradict — the headline QQQ move.',
+    'Live stats for each sector ETF — daily change, momentum and relative strength — so you can see which sectors agree or disagree with QQQ\'s move.',
 }
 
 /** circular progress ring */
@@ -272,38 +314,30 @@ const axisTick = { fill: '#64748b', fontSize: 11 }
 /* ------------------------------------------------------------------ */
 
 export default function Dashboard() {
-  const user = useAuthStore((state) => state.user)
   const token = useAuthStore((state) => state.token)
   const {
-    signals,
     rollingCorrelation,
     qqqHealth,
-    qqqScore,
-    fragilityMeter,
-    leadLag,
     prediction,
+    rotation,
     loading,
-    wsConnected,
+    lastUpdated,
     refresh,
     startRealtime,
     stopRealtime,
   } = useMarketStore()
 
-  const [updatedAt, setUpdatedAt] = useState<Date>(new Date())
   const [exporting, setExporting] = useState(false)
-  // hit-rate horizon UI (component-local, not store). null = Auto (default).
-  const [hitRateAuto, setHitRateAuto] = useState(true)
-  const [hitRateHorizon, setHitRateHorizon] = useState<number | null>(null)
-
-  const highestStrength = signals.reduce(
-    (best, item) => (item.relativeStrength > best.relativeStrength ? item : best),
-    signals[0],
-  )
+  // AI-dependency lookback window (by server-provided key, e.g. '1M'). Drives the
+  // baseline comparison + the bottleneck ranking over that window. The headline %
+  // (current dependency) stays stable; only the comparison and ranking re-window.
+  const [aiWinKey, setAiWinKey] = useState<string>('1M')
 
   useEffect(() => {
+    // background poll is silent (no loading flag) so the UI doesn't flicker/reflow
+    // every cycle; the tool auto-refreshes, so there's no manual refresh button.
     const run = () => {
-      refresh()
-      setUpdatedAt(new Date())
+      refresh(true)
     }
     run()
     const interval = window.setInterval(run, POLL_INTERVAL_MS)
@@ -338,45 +372,94 @@ export default function Dashboard() {
   }
 
   const healthTone = scoreTone(qqqHealth.score)
-  const fragTone = fragilityTone(fragilityMeter.level)
-  const dirValue = qqqScore.direction === 'bullish' ? 1 : qqqScore.direction === 'bearish' ? -1 : 0
-  const dirTone = trendTone(dirValue)
-  const probabilityPct = Math.round((qqqScore.probability + 1) * 50)
 
-  // --- trend regime (200-day SMA engine) — the backtested headline signal ---
-  const regime = qqqScore.regime ?? 'unknown'
-  const isRiskOn = regime === 'risk-on'
-  const isRiskOff = regime === 'risk-off'
-  const trendGap = qqqScore.trend_gap ?? qqqScore.raw_score ?? 0
-  const regimeStyle = isRiskOn
-    ? {
-        label: 'RISK-ON',
-        accent: 'text-emerald-400',
-        dot: 'bg-emerald-400',
-        grad: 'from-emerald-950/50 via-slate-900 to-slate-900',
-        border: 'border-emerald-800/50',
-        chip: 'bg-emerald-500/10 text-emerald-300',
-        icon: '▲',
-      }
-    : isRiskOff
-      ? {
-          label: 'RISK-OFF',
-          accent: 'text-rose-400',
-          dot: 'bg-rose-400',
-          grad: 'from-rose-950/50 via-slate-900 to-slate-900',
-          border: 'border-rose-800/50',
-          chip: 'bg-rose-500/10 text-rose-300',
-          icon: '▼',
-        }
-      : {
-          label: 'REGIME UNKNOWN',
-          accent: 'text-slate-300',
-          dot: 'bg-slate-500',
-          grad: 'from-slate-900 via-slate-900 to-slate-900',
-          border: 'border-slate-800',
-          chip: 'bg-slate-500/10 text-slate-300',
-          icon: '■',
-        }
+  // Intraday composite signal — the SAME engine as projection / health / lead-lag.
+  // Every analytic card on the dashboard derives from this one intraday prediction
+  // payload; there is no parallel long-term/daily logic in the UI.
+  const composite = prediction?.score ?? null
+  const compositeReady = prediction?.status === 'ok' && composite?.status === 'ok'
+  const compositeProbPct = Math.round((composite?.probability_up ?? 0.5) * 100)
+  const compositeScoreVal = composite?.score ?? 0
+  const compositeDir = !compositeReady
+    ? 'warming up'
+    : compositeProbPct >= 55
+      ? 'bullish'
+      : compositeProbPct <= 45
+        ? 'bearish'
+        : 'neutral'
+  const compositeTone = trendTone(
+    compositeDir === 'bullish' ? 1 : compositeDir === 'bearish' ? -1 : 0,
+  )
+
+  // Intraday fragility — drives the Fragility-meter KPI (was placeholder before).
+  const fragVal = composite?.components.fragility ?? 0
+  const fragLevel = !compositeReady
+    ? 'Unknown'
+    : fragVal >= 0.5
+      ? 'High'
+      : fragVal >= 0.25
+        ? 'Elevated'
+        : 'Low'
+  const fragTone = fragilityTone(fragLevel)
+  const fragWarning =
+    prediction?.confirmation?.message ||
+    (prediction?.lead_lag?.diverging?.length
+      ? `Diverging: ${prediction.lead_lag.diverging.join(', ')}.`
+      : 'No structural warnings detected.')
+
+  // --- AI-capex dependency (structural / daily — NOT intraday) ---
+  const aiDep = prediction?.ai_dependency ?? null
+  const aiDepReady = aiDep?.status === 'ok'
+  const aiDepPct = Math.round((aiDep?.dependency_now ?? 0) * 100)
+  const aiTrendFull = aiDep?.dependency_trend ?? []
+  const aiAvail = aiTrendFull.length
+
+  // windows are measured server-side (the client can't recompute coupling without
+  // the raw daily returns). Pick the selected one; fall back to 1M then the last.
+  const aiWindows = aiDep?.windows ?? []
+  const aiWin =
+    aiWindows.find((w) => w.key === aiWinKey) ??
+    aiWindows.find((w) => w.key === '1M') ??
+    aiWindows[aiWindows.length - 1]
+  const aiWinDays = aiWin?.days ?? 21
+
+  // change + sparkline zoom come from the rolling-dependency trend over `aiWinDays`
+  const aiBaselineIdx = Math.max(0, aiAvail - 1 - aiWinDays)
+  const aiNowVal = aiAvail ? aiTrendFull[aiAvail - 1].value : 0
+  const aiBaseVal = aiAvail ? aiTrendFull[aiBaselineIdx].value : 0
+  const aiChangePts = Math.round((aiNowVal - aiBaseVal) * 100)
+  const aiWindowTrend = aiTrendFull.slice(aiBaselineIdx).map((p) => ({
+    date: p.date,
+    value: Math.round(p.value * 100),
+  }))
+  const aiPeriodLabel =
+    aiWin?.key === 'all' ? 'inception' : `the last ${aiWin?.label ?? 'month'}`
+  // strongest coupling over the SELECTED window — re-ranks as you change the window
+  const aiWinThemes = (aiWin?.themes ?? []).filter((t) => t.corr != null)
+  const aiMostCoupled = aiWinThemes[0]?.label
+  const aiHookLine = aiDepReady
+    ? `QQQ is ~${aiDepPct}% explained by the AI build-out — ${
+        aiChangePts >= 0 ? 'up' : 'down'
+      } ${Math.abs(aiChangePts)} pts over ${aiPeriodLabel}.${
+        aiMostCoupled ? ` Most-coupled bottleneck: ${aiMostCoupled}.` : ''
+      }`
+    : ''
+  // is today the highest dependency reading inside the selected window?
+  const aiWindowMax = aiWindowTrend.length ? Math.max(...aiWindowTrend.map((p) => p.value)) : 0
+  const aiAtHigh = aiWindowTrend.length > 3 && aiDepPct >= aiWindowMax
+
+  // theme bars: coupling from the selected window, merged with the static member
+  // metadata (which tickers fed it) carried on the top-level themes.
+  const aiMemberMeta = new Map((aiDep?.themes ?? []).map((t) => [t.key, t]))
+  const aiThemeBars = aiWinThemes.map((t) => ({
+    name: t.label,
+    tickers: (aiMemberMeta.get(t.key)?.members ?? [])
+      .filter((m) => m.included)
+      .map((m) => m.symbol),
+    corr: Math.round((t.corr ?? 0) * 100),
+    change: t.change,
+    limited: t.limited,
+  }))
 
   // --- intraday QQQ projection (measured lead/lag + composite score) ---
   const proj = prediction?.projection ?? null
@@ -395,6 +478,7 @@ export default function Dashboard() {
   const dirArrow = projDir === 'up' ? '▲' : projDir === 'down' ? '▼' : '■'
   const dirText =
     projDir === 'up' ? 'text-emerald-400' : projDir === 'down' ? 'text-rose-400' : 'text-slate-300'
+  const projDirTone = trendTone(projDir === 'up' ? 1 : projDir === 'down' ? -1 : 0)
   const projConfidencePct = Math.round((proj?.confidence ?? 0) * 100)
   const probUpPct = Math.round((projScore?.probability_up ?? 0.5) * 100)
   const barsCollected = prediction?.bars_used ?? 0
@@ -407,11 +491,6 @@ export default function Dashboard() {
   const corrRegime = prediction?.correlation_regime ?? null
   const corrRegimeReady = corrRegime?.status === 'ok'
 
-  const stabilityBadge = deriveStabilityBadge(prediction)
-  const hitRateView = deriveHitRate(prediction, {
-    horizon: hitRateAuto ? null : hitRateHorizon,
-  })
-
   const corrBars = bucket4hCorr(rollingCorrelation)
 
   // signal-universe tiles: tracked ETFs ranked by real 30-min momentum (top 8)
@@ -422,6 +501,7 @@ export default function Dashboard() {
     .sort((a, b) => b.mom - a.mom)
     .slice(0, 8)
   const universeMaxAbs = universeTiles.reduce((mx, t) => Math.max(mx, Math.abs(t.mom)), 0)
+  const momLeader = universeTiles[0] ?? null  // strongest sector by 30m momentum (KPI)
 
   const breadth = prediction?.breadth ?? null
   const breadthReady = breadth?.status === 'ok'
@@ -455,108 +535,53 @@ export default function Dashboard() {
         ? 'rose'
         : 'amber'
 
-  const stabilityToneCls = toneClasses(stabilityBadge.tone)
-
   return (
-    <div className="space-y-6">
-      {/* ---------------------------------------------------------- */}
-      {/* hero                                                        */}
-      {/* ---------------------------------------------------------- */}
-      <div className="relative overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-900 to-cyan-950/40 p-6 shadow-glow sm:p-8">
-        <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-cyan-500/10 blur-3xl" />
-        <div className="relative flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="relative flex h-2.5 w-2.5">
-                <span
-                  className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                    wsConnected ? 'animate-ping bg-emerald-400' : 'bg-slate-500'
-                  }`}
-                />
-                <span
-                  className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
-                    wsConnected ? 'bg-emerald-400' : 'bg-slate-500'
-                  }`}
-                />
-              </span>
-              <SectionLabel>
-                {wsConnected ? 'Live · realtime feed' : 'Polling · 12s refresh'}
-              </SectionLabel>
-            </div>
-            <h1 className="mt-3 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-              QQQ &amp; Sector Leadership Analytics
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-              Relative strength, divergence, rolling correlations, lead/lag signals and
-              fragility — all in one glance.
-            </p>
-            {/* compact trend-regime chip (demoted from the old banner) */}
-            <div className="mt-3 inline-flex items-center gap-2">
-              <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${regimeStyle.chip}`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${regimeStyle.dot} ${
-                    isRiskOn || isRiskOff ? 'animate-pulse' : ''
-                  }`}
-                />
-                Regime: {regimeStyle.label}
-                {(isRiskOn || isRiskOff) && (
-                  <span className="font-normal text-slate-400">
-                    · {Math.abs(trendGap * 100).toFixed(1)}% {trendGap >= 0 ? 'above' : 'below'}{' '}
-                    {qqqScore.trend_window ?? 200}-day trend
-                  </span>
-                )}
-              </span>
-              <InfoTip text={TIPS.regime} align="left" />
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
-              <p className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">Signed in</p>
-              <p className="mt-0.5 max-w-[12rem] truncate text-sm font-medium text-white">
-                {user?.email ?? 'Guest'}
-              </p>
-              <p className="mt-1 text-[0.7rem] text-slate-400">
-                Updated {updatedAt.toLocaleTimeString()}
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                refresh()
-                setUpdatedAt(new Date())
-              }}
-              disabled={loading}
-              className="grid h-12 w-12 place-items-center rounded-2xl border border-slate-700 bg-slate-950/70 text-cyan-300 transition hover:border-cyan-500/50 hover:bg-slate-900 disabled:opacity-50"
-              title="Refresh now"
-            >
-              <span className={`text-lg ${loading ? 'animate-spin' : ''}`}>↻</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* regime-change alert toggle (Pro only; renders nothing for free) */}
-      <AlertToggle />
+    <div className="space-y-4">
+      {/* Overnight / pre-market board — visible pre-open, auto-collapses ~10am ET */}
+      <PreMarketRibbon />
 
       {/* ---------------------------------------------------------- */}
       {/* QQQ intraday projection — measured lead/lag + composite      */}
       {/* ---------------------------------------------------------- */}
-      <Card className="relative overflow-hidden p-6 sm:p-7">
+      <Card className="relative overflow-hidden p-5 sm:p-6">
         <div className="pointer-events-none absolute -left-16 -top-16 h-48 w-48 rounded-full bg-indigo-500/10 blur-3xl" />
-        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+        {/* last data refresh — absolutely positioned so it never shifts the card height */}
+        {lastUpdated != null && (
+          <span
+            className="pointer-events-none absolute right-4 top-4 z-10 text-right text-[0.65rem] font-medium leading-tight text-slate-500"
+            title={`Last data refresh: ${new Date(lastUpdated).toLocaleString()}`}
+          >
+            <span className="hidden sm:inline text-slate-600">Updated </span>
+            {new Date(lastUpdated).toLocaleString(undefined, {
+              month: 'short',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}
+          </span>
+        )}
+        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-indigo-500/10 text-lg text-indigo-300">
                 🔮
               </span>
               <LabeledSection label="QQQ projection" tip={TIPS.projection} align="left" />
+              {compositeReady && (
+                <span
+                  className={`ml-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${compositeTone.bg} ${compositeTone.text}`}
+                  title="Intraday composite read — same engine that sets the direction below"
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${compositeTone.bar}`} />
+                  {compositeDir} · {compositeProbPct}%
+                </span>
+              )}
             </div>
 
             {projReady ? (
               <>
-                <div className="mt-3 flex items-center gap-3">
+                <div className="mt-2 flex items-center gap-3">
                   <span className={`text-3xl font-bold ${dirText}`}>{dirArrow}</span>
                   <div>
                     <p className="text-3xl font-semibold tracking-tight text-white">
@@ -572,7 +597,7 @@ export default function Dashboard() {
                     {verdictStyle.label}
                   </span>
                 </div>
-                <p className="mt-3 text-sm text-slate-400">
+                <p className="mt-2 text-sm text-slate-400">
                   Expected move{' '}
                   <strong className={dirText}>
                     {proj!.expected_return >= 0 ? '+' : ''}
@@ -606,7 +631,7 @@ export default function Dashboard() {
               <div className="min-w-[88px]">
                 <p className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">Prob. up</p>
                 <p className="mt-1 text-lg font-semibold text-white">{probUpPct}%</p>
-                <Meter value={probUpPct} max={100} color={dirTone.bar} />
+                <Meter value={probUpPct} max={100} color={projDirTone.bar} />
               </div>
               <div className="min-w-[88px]">
                 <p className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">
@@ -618,34 +643,37 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+        {projReady && (
+          <CardLegend items={VERDICT_LEGEND} note="verdict · ▲ up  ■ flat  ▼ down" />
+        )}
       </Card>
 
       {/* ---------------------------------------------------------- */}
       {/* KPI cards                                                   */}
       {/* ---------------------------------------------------------- */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {/* leadership */}
-        <Card className="animate-fade-up p-5 transition hover:-translate-y-0.5 hover:border-slate-700">
+        <Card className="animate-fade-up p-4 transition hover:-translate-y-0.5 hover:border-slate-700">
           <div className="flex items-start justify-between">
-            <LabeledSection label="Top relative strength" tip={TIPS.relativeStrength} align="left" />
+            <LabeledSection label="Strongest sector · 30m" tip={TIPS.relativeStrength} align="left" />
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/10 text-cyan-300">
               ⚡
             </span>
           </div>
           <p className="mt-4 text-3xl font-semibold text-white">
-            {highestStrength?.symbol ?? '—'}
+            {momLeader?.symbol ?? '—'}
           </p>
-          <p className="mt-1 text-sm text-slate-400">{highestStrength?.name}</p>
+          <p className="mt-1 text-sm text-slate-400">{momLeader?.name ?? 'Warming up'}</p>
           <div className="mt-4 flex items-center justify-between text-sm">
-            <span className="text-slate-400">RS multiple</span>
-            <span className="font-semibold text-cyan-300">
-              {highestStrength?.relativeStrength.toFixed(2)}x
+            <span className="text-slate-400">30-min momentum</span>
+            <span className={`font-semibold ${momLeader && momLeader.mom < 0 ? 'text-rose-300' : 'text-cyan-300'}`}>
+              {momLeader ? `${momLeader.mom >= 0 ? '+' : ''}${(momLeader.mom * 100).toFixed(2)}%` : '—'}
             </span>
           </div>
         </Card>
 
         {/* QQQ health */}
-        <Card className="animate-fade-up p-5 transition hover:-translate-y-0.5 hover:border-slate-700">
+        <Card className="animate-fade-up p-4 transition hover:-translate-y-0.5 hover:border-slate-700">
           <div className="flex items-start justify-between">
             <LabeledSection label="QQQ internal health" tip={TIPS.health} align="left" />
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-500/10 text-emerald-300">
@@ -674,7 +702,7 @@ export default function Dashboard() {
 
         {/* fragility */}
         <Card
-          className={`animate-fade-up p-5 transition hover:-translate-y-0.5 hover:border-slate-700`}
+          className={`animate-fade-up p-4 transition hover:-translate-y-0.5 hover:border-slate-700`}
         >
           <div className="flex items-start justify-between">
             <LabeledSection label="Fragility meter" tip={TIPS.fragility} align="left" />
@@ -684,194 +712,191 @@ export default function Dashboard() {
           </div>
           <div className="mt-4 flex items-center gap-2">
             <span className={`h-2.5 w-2.5 rounded-full ${fragTone.dot}`} />
-            <p className={`text-2xl font-semibold capitalize ${fragTone.text}`}>
-              {fragilityMeter.level}
-            </p>
+            <p className={`text-2xl font-semibold capitalize ${fragTone.text}`}>{fragLevel}</p>
           </div>
           <p className="mt-3 text-xs text-slate-400">
-            {fragilityMeter.warnings.length} active warning
-            {fragilityMeter.warnings.length === 1 ? '' : 's'}
+            {compositeReady ? `${Math.round(fragVal * 100)}% internal fragility` : 'Warming up'}
           </p>
-          <p className="mt-1 text-xs leading-5 text-slate-400 line-clamp-2">
-            {fragilityMeter.warnings[0] ?? 'No structural warnings detected.'}
-          </p>
-        </Card>
-
-        {/* lead-lag */}
-        <Card className="animate-fade-up p-5 transition hover:-translate-y-0.5 hover:border-slate-700">
-          <div className="flex items-start justify-between">
-            <LabeledSection label="QQQ lead-lag score" tip={TIPS.leadLagScore} align="right" />
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-500/10 text-indigo-300">
-              🎯
-            </span>
-          </div>
-          <p className={`mt-4 text-3xl font-semibold capitalize ${dirTone.text}`}>
-            {qqqScore.direction}
-          </p>
-          <div className="mt-4 space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-400">Probability</span>
-              <span className="font-semibold text-slate-200">{probabilityPct}%</span>
-            </div>
-            <Meter value={probabilityPct} max={100} color={dirTone.bar} />
-            <p className="text-[0.7rem] text-slate-400">
-              Score {qqqScore.raw_score.toFixed(2)} · via {qqqScore.provider}
-            </p>
-          </div>
+          <p className="mt-1 text-xs leading-5 text-slate-400 line-clamp-2">{fragWarning}</p>
         </Card>
       </div>
+
+      {/* ---------------------------------------------------------- */}
+      {/* AI-capex dependency — flagship structural read (daily)      */}
+      {/* ---------------------------------------------------------- */}
+      <Card className="relative overflow-hidden p-5 sm:p-6">
+        <div className="pointer-events-none absolute -right-20 -top-20 h-52 w-52 rounded-full bg-fuchsia-500/10 blur-3xl" />
+        <div className="relative">
+          <div className="flex items-center gap-2">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-fuchsia-500/10 text-lg text-fuchsia-300">
+              🧠
+            </span>
+            <LabeledSection label="AI build-out dependency" tip={TIPS.aiDependency} align="left" />
+            <span className="ml-1 rounded-full bg-slate-800/80 px-2 py-0.5 text-[0.6rem] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Structural · daily
+            </span>
+            {aiDepReady && aiWindows.length > 0 && (
+              <label className="ml-auto flex items-center gap-1.5 text-[0.7rem] text-slate-400">
+                <span className="inline-flex items-center gap-1">
+                  <span className="hidden sm:inline">Window</span>
+                  <InfoTip text={TIPS.aiWindow} align="right" />
+                </span>
+                <select
+                  value={aiWin?.key ?? '1M'}
+                  onChange={(e) => setAiWinKey(e.target.value)}
+                  className="rounded-lg border border-slate-700 bg-slate-950/70 px-2 py-1 text-xs font-medium text-slate-200 outline-none transition hover:border-slate-500 focus:border-fuchsia-400"
+                >
+                  {aiWindows.map((w) => (
+                    <option key={w.key} value={w.key}>
+                      {w.key === 'all' ? 'Since inception' : w.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+
+          {aiDepReady ? (
+            <div className="mt-3 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+              {/* left: headline number + trend */}
+              <div>
+                <div className="flex flex-wrap items-end gap-x-3 gap-y-1.5">
+                  <p className="text-5xl font-bold tracking-tight text-white">{aiDepPct}%</p>
+                  <span
+                    className={`mb-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      aiChangePts > 0
+                        ? 'bg-emerald-500/10 text-emerald-300'
+                        : aiChangePts < 0
+                          ? 'bg-rose-500/10 text-rose-300'
+                          : 'bg-slate-700/40 text-slate-300'
+                    }`}
+                  >
+                    {aiChangePts >= 0 ? '▲' : '▼'} {Math.abs(aiChangePts)} pts (
+                    {Math.round(aiBaseVal * 100)}%) over {aiPeriodLabel}
+                  </span>
+                  {aiAtHigh && (
+                    <span className="mb-1.5 inline-flex items-center gap-1 rounded-full bg-fuchsia-500/15 px-2 py-0.5 text-xs font-semibold text-fuchsia-200">
+                      ◆ highest {aiWin?.key === 'all' ? 'on record' : `in ${aiWin?.label}`}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-sm text-slate-400">
+                  of QQQ&apos;s daily move is explained by the AI build-out complex
+                </p>
+                <div className="mt-3 h-24">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={aiWindowTrend} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="aiDepFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#e879f9" stopOpacity={0.5} />
+                          <stop offset="100%" stopColor="#e879f9" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <YAxis domain={[0, 100]} hide />
+                      <XAxis dataKey="date" hide />
+                      <Tooltip
+                        contentStyle={{
+                          background: '#0f172a',
+                          border: '1px solid #334155',
+                          borderRadius: 12,
+                          fontSize: 12,
+                        }}
+                        labelStyle={{ color: '#94a3b8' }}
+                        formatter={(v: number) => [`${v}%`, 'dependency']}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="value"
+                        stroke="#e879f9"
+                        strokeWidth={2}
+                        fill="url(#aiDepFill)"
+                        isAnimationActive={false}
+                      />
+                      {/* baseline marker — anchors the "vs X" comparison visually */}
+                      {aiWindowTrend.length > 1 && (
+                        <ReferenceDot
+                          x={aiWindowTrend[0].date}
+                          y={aiWindowTrend[0].value}
+                          r={3.5}
+                          fill="#64748b"
+                          stroke="#0f172a"
+                          strokeWidth={2}
+                          isFront
+                        />
+                      )}
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="mt-3 text-[0.95rem] font-medium leading-6 text-slate-100">
+                  {aiHookLine}
+                </p>
+              </div>
+
+              {/* right: per-bottleneck coupling over the selected window */}
+              <div>
+                <p className="flex items-center gap-2 text-[0.65rem] uppercase tracking-[0.2em] text-slate-400">
+                  Coupling to QQQ by bottleneck · {aiWin?.label ?? '1 month'}
+                  {aiWin && !aiWin.reliable && (
+                    <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[0.55rem] font-medium normal-case tracking-normal text-amber-300/90">
+                      short window · noisier
+                    </span>
+                  )}
+                </p>
+                <div className="mt-3 space-y-2.5">
+                  {aiThemeBars.map((t) => (
+                    <div key={t.name}>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-300">
+                          {t.name}
+                          {t.tickers.length > 0 && (
+                            <span className="ml-1 text-[0.65rem] text-slate-500">
+                              ({t.tickers.join(', ')})
+                            </span>
+                          )}
+                          {t.limited && (
+                            <span className="ml-1.5 text-[0.6rem] text-amber-300/80">
+                              limited history
+                            </span>
+                          )}
+                        </span>
+                        <span className="font-semibold text-slate-200">
+                          {t.corr}%
+                          <span
+                            className={`ml-1.5 ${
+                              t.change > 0.02
+                                ? 'text-emerald-300'
+                                : t.change < -0.02
+                                  ? 'text-rose-300'
+                                  : 'text-slate-500'
+                            }`}
+                          >
+                            {t.change >= 0 ? '▲' : '▼'}
+                          </span>
+                        </span>
+                      </div>
+                      <Meter value={Math.abs(t.corr)} max={100} color="bg-fuchsia-400" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-slate-400">
+              Warming up — gathering daily history to measure how dependent QQQ has become on the
+              AI build-out complex.
+            </p>
+          )}
+        </div>
+      </Card>
 
       {/* ---------------------------------------------------------- */}
       {/* charts + sidebar — Pro                                      */}
       {/* ---------------------------------------------------------- */}
       <ProGate label="Sector analytics">
       <div className="grid gap-6 lg:grid-cols-2">
-          {/* lead-lag — full-width hero */}
+          {/* rotation flow — full-width row (replaces coarse lead/lag) */}
           <div className="lg:col-span-2">
-            <Card className="p-6">
-              <LabeledSection label="Lead / lag detection" tip={TIPS.leadLagDetect} align="left" />
-              {prediction?.status === 'ok' && prediction.lead_lag.leader ? (
-                <h3 className="mt-3 text-xl font-semibold text-white">
-                  {leadLag.leader} <span className="text-slate-400">leads</span> {leadLag.lagger}{' '}
-                  <span className="text-slate-400">by</span> {leadLag.leadMinutes}m
-                </h3>
-              ) : (
-                <h3 className="mt-3 text-xl font-semibold text-slate-300">
-                  {prediction?.status === 'ok' ? 'No clear leader' : 'Warming up'}
-                </h3>
-              )}
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs font-medium text-cyan-300">
-                  Confidence: {leadLag.confidence}
-                </span>
-                {/* cross-session stability badge (#2) */}
-                <span
-                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${stabilityToneCls.chip}`}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${stabilityToneCls.dot}`} />
-                  Stability: {stabilityBadge.label}
-                  <InfoTip text={TIPS.stability} align="left" />
-                </span>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-slate-400">{stabilityBadge.message}</p>
-
-              {/* hit-rate / continuation probability (#4) — horizon Auto toggle */}
-              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-cyan-300/80">
-                    Hit rate
-                    <InfoTip text={TIPS.hitRate} align="left" />
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (hitRateAuto) {
-                          // turning Auto OFF -> always have a concrete horizon selected
-                          // (default to the first option, 5m) so it evaluates a real window
-                          setHitRateHorizon((h) => h ?? hitRateView.horizonOptions[0] ?? 5)
-                          setHitRateAuto(false)
-                        } else {
-                          setHitRateAuto(true)
-                        }
-                      }}
-                      className={`rounded-full px-2.5 py-1 text-[0.7rem] font-semibold transition ${
-                        hitRateAuto
-                          ? 'bg-cyan-500/15 text-cyan-300'
-                          : 'border border-slate-700 text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Auto{hitRateAuto && hitRateView.ready ? ` · ~${hitRateView.horizonMinutes}m` : ''}
-                    </button>
-                    {!hitRateAuto && (
-                      <select
-                        value={hitRateHorizon ?? hitRateView.horizonOptions[0] ?? 5}
-                        onChange={(e) => setHitRateHorizon(Number(e.target.value))}
-                        className="rounded-full border border-slate-700 bg-slate-950 px-2.5 py-1 text-[0.7rem] font-semibold text-slate-200 focus:border-cyan-500/50 focus:outline-none"
-                      >
-                        {hitRateView.horizonOptions.map((h) => (
-                          <option key={h} value={h}>
-                            {h}m
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                </div>
-                {hitRateView.ready ? (
-                  <>
-                    <div className="mt-2 flex items-baseline gap-2">
-                      <span
-                        className={`text-2xl font-semibold ${
-                          hitRateView.edge > 0 ? 'text-emerald-400' : 'text-slate-300'
-                        }`}
-                      >
-                        {hitRateView.hitRatePct}%
-                      </span>
-                      <span className="text-xs text-slate-400">{hitRateView.line}</span>
-                    </div>
-                  </>
-                ) : (
-                  <p className="mt-2 text-xs text-slate-400">{hitRateView.line}</p>
-                )}
-              </div>
-
-              <ul className="mt-4 space-y-2">
-                {leadLag.details.map((detail) => (
-                  <li key={detail} className="flex gap-2 text-sm text-slate-300">
-                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400" />
-                    <span>{detail}</span>
-                  </li>
-                ))}
-              </ul>
-
-              {prediction?.status === 'ok' && prediction.lead_lag.entries.length > 0 && (
-                <div className="mt-4 overflow-hidden rounded-xl border border-slate-800">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-950/60 text-slate-400">
-                      <tr>
-                        <th className="px-3 py-2 font-medium">Symbol</th>
-                        <th className="px-3 py-2 font-medium">Role</th>
-                        <th className="px-3 py-2 text-right font-medium">Lag</th>
-                        <th className="px-3 py-2 text-right font-medium">Corr</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {prediction.lead_lag.entries.slice(0, 6).map((entry) => {
-                        const roleTone =
-                          entry.role === 'leader'
-                            ? 'text-cyan-300'
-                            : entry.role === 'confirmer'
-                              ? 'text-emerald-300'
-                              : entry.role === 'diverging'
-                                ? 'text-rose-300'
-                                : 'text-slate-400'
-                        return (
-                          <tr key={entry.symbol} className="border-t border-slate-800/80">
-                            <td className="px-3 py-2 font-semibold text-slate-200">
-                              {entry.symbol}
-                            </td>
-                            <td className={`px-3 py-2 capitalize ${roleTone}`}>{entry.role}</td>
-                            <td className="px-3 py-2 text-right text-slate-300">
-                              {entry.best_lag}m
-                            </td>
-                            <td className="px-3 py-2 text-right text-slate-300">
-                              {entry.best_corr.toFixed(2)}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {prediction?.status !== 'ok' && (
-                <p className="mt-4 text-xs text-slate-400">
-                  {barsCollected} bar{barsCollected === 1 ? '' : 's'} collected this session.
-                </p>
-              )}
-            </Card>
+            <RotationFlow rotation={rotation} />
           </div>
 
           {/* Confirmation gate (#3) — the pre-trade card */}
@@ -915,6 +940,7 @@ export default function Dashboard() {
                     </p>
                   </div>
                 </div>
+                <CardLegend items={CONFIRM_LEGEND} note="state of the current QQQ move" />
               </>
             ) : (
               <p className="mt-3 text-sm text-slate-400">
@@ -975,7 +1001,11 @@ export default function Dashboard() {
 
           {/* Nasdaq-100 breadth — real constituent participation */}
           <Card className="p-6">
-            <LabeledSection label="QQQ breadth · 100 stocks" tip={TIPS.breadth} align="left" />
+            <div className="flex items-start justify-between gap-3">
+              <LabeledSection label="QQQ breadth · 100 stocks" tip={TIPS.breadth} align="left" />
+              {/* breadth-shift email alerts live here — this is what the alert tracks */}
+              <AlertToggle compact />
+            </div>
             {breadthReady && breadth ? (
               <>
                 <div className="mt-3 flex items-center justify-between">
@@ -1006,6 +1036,7 @@ export default function Dashboard() {
                   </div>
                 </div>
                 <p className="mt-3 text-xs leading-5 text-slate-400">{breadth.message}</p>
+                <CardLegend items={BREADTH_LEGEND} note="participation across the 100 stocks" />
               </>
             ) : (
               <p className="mt-3 text-sm text-slate-400">
@@ -1043,6 +1074,7 @@ export default function Dashboard() {
                     : 'Treat lead/lag as noise today.'}
                 </p>
                 <p className="mt-2 text-xs leading-5 text-slate-400">{corrRegime.message}</p>
+                <CardLegend items={REGIME_LEGEND} note="how tightly tech sectors move together" />
               </>
             ) : (
               <p className="mt-3 text-sm text-slate-400">
@@ -1065,8 +1097,8 @@ export default function Dashboard() {
                   <XAxis dataKey="name" tick={axisTick} tickLine={false} axisLine={false} />
                   <YAxis tick={axisTick} tickLine={false} axisLine={false} width={36} domain={[0, 1]} />
                   <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="qqqXlk" name="QQQ·XLK" fill="#22d3ee" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="qqqSmh" name="QQQ·SMH" fill="#a78bfa" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="qqqXlk" name="QQQ·XLK" fill="#22d3ee" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                  <Bar dataKey="qqqSmh" name="QQQ·SMH" fill="#a78bfa" radius={[4, 4, 0, 0]} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

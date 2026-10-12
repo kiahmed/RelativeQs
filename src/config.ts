@@ -12,11 +12,11 @@
 const env = import.meta.env
 
 /** Base URL of the backend HTTP API. */
-export const BACKEND_URL: string = env.VITE_BACKEND_URL || 'http://localhost:8000'
+export const BACKEND_URL: string = env.VITE_RELQS_BACKEND_URL || 'http://localhost:8000'
 
 /** Websocket URL for the realtime market feed. Derived from BACKEND_URL if unset. */
 export const WS_URL: string =
-  env.VITE_WS_URL || `${BACKEND_URL.replace(/^http/, 'ws')}/ws/market`
+  env.VITE_RELQS_WS_URL || `${BACKEND_URL.replace(/^http/, 'ws')}/ws/market`
 
 /** How often the dashboard re-fetches data over HTTP, in milliseconds. */
 export const POLL_INTERVAL_MS: number = Number(env.VITE_POLL_INTERVAL_MS) || 12000

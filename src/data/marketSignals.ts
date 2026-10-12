@@ -64,10 +64,26 @@ export type LeadLagSignal = {
 export type LeadLagEntry = {
   symbol: string
   best_lag: number
+  lag_minutes?: number
   best_corr: number
   corr_at_zero: number
   beta: number
   role: 'leader' | 'confirmer' | 'diverging' | 'weak'
+}
+
+/** Lead/lag recomputed at a coarser frame (5m/15m) + decoupling watch. */
+export type LeadLagFrame = {
+  status: string
+  bars_used: number
+  bar_minutes: number
+  target: string
+  entries: LeadLagEntry[]
+  leader: { symbol: string; lag_minutes: number; corr: number; beta: number } | null
+  confirmers: string[]
+  diverging: string[]
+  decoupled: { symbol: string; usual_corr: number; now_corr: number; drop: number }[]
+  streak?: { symbol: string | null; lag_minutes: number; count: number; confirmed: boolean }
+  confirmed_leader?: { symbol: string; lag_minutes: number; corr: number; beta: number } | null
 }
 
 export type PredictionPayload = {
@@ -85,6 +101,7 @@ export type PredictionPayload = {
     confirmers: string[]
     diverging: string[]
   }
+  lead_lag_tf?: Record<string, LeadLagFrame>
   score: {
     status: string
     verdict: 'continue' | 'stall' | 'fragile' | 'warming_up'
@@ -180,6 +197,94 @@ export type PredictionPayload = {
     divergence: number
     message: string
   }
+  ai_dependency?: AIDependency
+}
+
+/* ------------------------------------------------------------------ */
+/* Rotation flow — inferred intraday money rotation across a universe.  */
+/* GET {BACKEND_URL}/rotation  +  WS message field `rotation`.          */
+/* ------------------------------------------------------------------ */
+
+export type RotationTag = 'in' | 'out' | 'neutral'
+
+export type RotationRow = {
+  symbol: string
+  name: string
+  /** window return, fraction */
+  ret: number
+  /** return relative to the subject (QQQ), fraction */
+  rel: number
+  /** window $-volume/min vs session norm (>1 = busier than usual) */
+  dvol_surge: number
+  /** in = absorbing money, out = shedding, neutral = no volume-backed move */
+  tag: RotationTag
+}
+
+export type RotationRegime = 'rotating' | 'coupled' | 'flat' | 'warming_up'
+
+export type RotationSummary = {
+  direction: 'qqq_out' | 'qqq_in' | 'broad' | 'flat'
+  into: string[]
+  from: string[]
+  unaccounted: boolean
+  text: string
+}
+
+export type RotationWindow = {
+  regime: RotationRegime
+  /** subject (QQQ) return for the window, fraction — can be null */
+  subject_return: number | null
+  subject_dvol_surge: number
+  /** already sorted by flow score (strongest inflow first) */
+  rows: RotationRow[]
+  summary: RotationSummary
+}
+
+export type RotationData = {
+  subject: string
+  universe: string[]
+  asof: string
+  session: 'live' | 'final'
+  /** keyed by window: "15m" | "30m" | "60m" */
+  windows: Record<string, RotationWindow>
+}
+
+/** AI-capex dependency index — structural/daily, walled off from intraday. */
+export type AIDependencyMember = {
+  symbol: string
+  label: string
+  bars: number
+  included: boolean
+}
+export type AIDependencyTheme = {
+  key: string
+  label: string
+  corr_now: number | null
+  beta_now: number | null
+  change: number
+  limited_history: boolean
+  members: AIDependencyMember[]
+}
+/** Bottleneck coupling re-measured over a lookback window (UI dropdown). */
+export type AIDependencyWindow = {
+  key: string
+  label: string
+  days: number
+  reliable: boolean
+  themes: { key: string; label: string; corr: number | null; change: number; limited: boolean }[]
+}
+export type AIDependency = {
+  status: 'ok' | 'warming_up' | 'no_data'
+  target: string
+  asof: string | null
+  dependency_now: number
+  dependency_trend: { date: string; value: number }[]
+  change: number
+  change_lookback_days: number
+  window_days: number
+  themes: AIDependencyTheme[]
+  windows?: AIDependencyWindow[]
+  headline: string
 }
 
 export type AIConcentration = {
@@ -730,4 +835,37 @@ export function deriveHitRate(
     message: hr.message,
     line,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Overnight / pre-market board (descriptive pre-open context; never a forecast)
+// ---------------------------------------------------------------------------
+export type PremarketMover = {
+  symbol: string
+  gap: number | null
+  since_open: number | null
+  dir: 'up' | 'down'
+  sector: string | null
+  weight: number | null
+  vs_tape: 'with_tape' | 'counter_tape' | null
+  crowd: 'sector_wide' | 'lone' | 'mixed' | 'with_market' | 'against_market' | null
+  sustain: 'holding' | 'fading' | null
+}
+
+export type PremarketBoard = {
+  status: string
+  asof: string
+  phase: 'pre' | 'open' | 'regular' | 'after' | 'closed'
+  collapse: boolean
+  minutes_to_open: number | null
+  tape: {
+    nq: number | null
+    es: number | null
+    asia: number | null
+    europe: number | null
+    breadth_up: number | null
+    cap_breadth_up: number | null
+  }
+  open_lean: { dir: 'up' | 'down' | 'flat'; hist_hit: number; basis: string }
+  movers: PremarketMover[]
 }

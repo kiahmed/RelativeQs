@@ -1,0 +1,52 @@
+# Fly.io config for the RelativeQs backend (FastAPI + background poll loop).
+#
+# Deployed from the `backend/` directory:  fly deploy -c ../deploy/fly.toml
+# (deploy_to_cloud.sh handles the path wiring for you.)
+#
+# Why min_machines_running = 1 + auto_stop_machines = "off":
+#   The backend is NOT a plain request/response API — `_poll_and_broadcast`
+#   runs forever, fetching market data and pushing it over websockets. If Fly
+#   stopped the machine between requests (the serverless default) that loop
+#   would freeze. We keep exactly one machine warm at all times.
+
+app = "relativeqs-api"
+primary_region = "iad"   # US-East: close to US market data + Upstash us-east-1
+
+# No [build].dockerfile here: a path would be resolved relative to THIS file
+# (deploy/), not the build context. We instead pass --dockerfile explicitly in
+# deploy_to_cloud.sh so it points at backend/Dockerfile regardless of cwd.
+
+# Non-secret defaults. Real secrets (REDIS_URL, SUPABASE_*, STRIPE_*, RESEND_*,
+# CORS_ORIGINS) are set with `fly secrets set` — see deploy_to_cloud.sh --sync-secrets.
+[env]
+  DATA_PROVIDER = "yahoo"
+  FETCH_PRE_POST_MARKET = "true"
+  POLL_INTERVAL_SECONDS = "30"
+  LOG_LEVEL = "INFO"
+
+[http_service]
+  internal_port = 8000          # matches the Dockerfile uvicorn --port 8000
+  force_https = true
+  # This backend is a SINGLETON always-on poller (a background loop that must run
+  # 24/7 to accumulate intraday history). It has no inbound traffic of its own, so
+  # any autostop idle-timer would kill it. auto_stop_machines = false tells Fly to
+  # NEVER stop the machine. Tested: min_machines_running alone does NOT keep an
+  # idle, outbound-only machine alive — autostop must be fully disabled.
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+  # Websockets ride the normal HTTP service on Fly (HTTP/1.1 upgrade) — no extra
+  # config needed. Generous timeout so idle ws connections aren't culled.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+# pandas + numpy + scipy + scikit-learn make this image RAM-hungry; 256MB OOMs
+# on import. 512MB is the safe floor.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpus = 1

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="rq" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#6366f1"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" rx="92" fill="url(#rq)"/>
+  <g transform="translate(200 200) scale(25) translate(-8.4 -8.4) scale(0.7)"
+     fill="none" stroke="#020617" stroke-width="1.1"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- faceted diamond -->
+    <path d="M8 3.2h8l2.4 3.6L12 13 5.6 6.8 8 3.2Z"/>
+    <path d="M5.6 6.8h12.8M8 3.2 12 13M16 3.2 12 13"/>
+    <!-- open hand cupping the gem -->
+    <path d="M4.6 15.2c0 3.6 3.3 5.6 7.4 5.6s7.4-2 7.4-5.6"/>
+    <path d="M4.6 15.2c-.9-.5-1.7.2-1.4 1.2M19.4 15.2c.9-.5 1.7.2 1.4 1.2"/>
+    <path d="M8.4 16.4v1.2M12 16.8v1.4M15.6 16.4v1.2"/>
+  </g>
+</svg>

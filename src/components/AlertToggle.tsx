@@ -4,11 +4,14 @@ import { useIsPro } from './ProGate'
 import { BACKEND_URL } from '../config'
 
 /**
- * Pro-only control for regime-change email alerts: an on/off toggle plus a
- * "send test email" button to verify the email path. Renders nothing for free
+ * Pro-only control for breadth-shift email alerts: an on/off toggle plus a
+ * "send test email" action to verify the email path. Renders nothing for free
  * users (the Pricing page is where they're sold the feature).
+ *
+ * `compact` renders just an inline labelled switch (for embedding in a card
+ * header); the default renders the full bordered strip.
  */
-export default function AlertToggle() {
+export default function AlertToggle({ compact = false }: { compact?: boolean }) {
   const isPro = useIsPro()
   const token = useAuthStore((s) => s.token)
   const [enabled, setEnabled] = useState<boolean | null>(null)
@@ -71,15 +74,58 @@ export default function AlertToggle() {
     }
   }
 
+  const Switch = (
+    <button
+      onClick={toggle}
+      disabled={saving || enabled === null}
+      aria-pressed={enabled === true}
+      title={enabled ? 'Email alerts on' : 'Email alerts off'}
+      className={`relative h-6 w-11 shrink-0 rounded-full transition disabled:opacity-50 ${
+        enabled ? 'bg-emerald-500' : 'bg-slate-700'
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${
+          enabled ? 'left-[22px]' : 'left-0.5'
+        }`}
+      />
+    </button>
+  )
+
+  if (compact) {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <div className="flex items-center gap-2">
+          <span
+            className="text-[0.7rem] font-medium text-slate-300"
+            title="Email me when Nasdaq-100 participation shifts (broad / mixed / narrow)."
+          >
+            🔔 Email alerts
+          </span>
+          {Switch}
+        </div>
+        {enabled && (
+          <button
+            onClick={sendTest}
+            disabled={testing}
+            className="text-[0.65rem] text-slate-500 underline-offset-2 transition hover:text-slate-300 hover:underline disabled:opacity-50"
+          >
+            {testing ? 'sending…' : testMsg ? testMsg : 'send test'}
+          </button>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/60 px-5 py-3.5">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <span className="text-lg">🔔</span>
           <div>
-            <p className="text-sm font-medium text-white">Regime-change email alerts</p>
+            <p className="text-sm font-medium text-white">Breadth-shift email alerts</p>
             <p className="text-xs text-slate-400">
-              Get an email the moment QQQ flips risk-on / risk-off.
+              Get an email when Nasdaq-100 participation flips broad / mixed / narrow.
             </p>
           </div>
         </div>
@@ -91,20 +137,7 @@ export default function AlertToggle() {
           >
             {testing ? 'Sending…' : 'Send test email'}
           </button>
-          <button
-            onClick={toggle}
-            disabled={saving || enabled === null}
-            aria-pressed={enabled === true}
-            className={`relative h-6 w-11 shrink-0 rounded-full transition disabled:opacity-50 ${
-              enabled ? 'bg-emerald-500' : 'bg-slate-700'
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${
-                enabled ? 'left-[22px]' : 'left-0.5'
-              }`}
-            />
-          </button>
+          {Switch}
         </div>
       </div>
       {testMsg && <p className="mt-2 text-xs text-slate-400">{testMsg}</p>}
