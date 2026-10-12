@@ -9,7 +9,7 @@
 #   stopped the machine between requests (the serverless default) that loop
 #   would freeze. We keep exactly one machine warm at all times.
 
-app = "relativeqs-api"
+app = "<fly-app>"
 primary_region = "iad"   # US-East: close to US market data + Upstash us-east-1
 
 # No [build].dockerfile here: a path would be resolved relative to THIS file

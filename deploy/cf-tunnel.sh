@@ -3,7 +3,7 @@
 # cf-tunnel.sh — manage the Cloudflare *named* tunnel that publishes the local
 # RelativeQs backend on a permanent HTTPS hostname.
 #
-#   browser -> https://edge-relativeq.facades.trade  (Cloudflare edge)
+#   browser -> https://<api-host>  (Cloudflare edge)
 #           -> relqs-cloudflared (this tunnel)
 #           -> http://relativeq-backend:8000        (compose network)
 #
@@ -43,9 +43,13 @@ for a in "$@"; do [ "$a" = "-y" ] || [ "$a" = "--yes" ] && ASSUME_YES=true; done
 set -a; . "$ENV_FILE"; set +a
 
 TUNNEL_NAME="${RELQS_TUNNEL_NAME:-relativeq-backend-tunnel}"
-API_HOST="${RELQS_API_HOST:-edge-relativeq.facades.trade}"
 ORIGIN_SERVICE="${RELQS_ORIGIN_SERVICE:-http://relativeq-backend:8000}"
-CF_ZONE="${RELQS_CF_ZONE:-facades.trade}"
+
+# No built-in defaults: the real hostname and zone live only in deploy/.env.
+: "${RELQS_API_HOST:?RELQS_API_HOST must be set in deploy/.env (public API hostname, e.g. api.example.com)}"
+: "${RELQS_CF_ZONE:?RELQS_CF_ZONE must be set in deploy/.env (Cloudflare zone, e.g. example.com)}"
+API_HOST="$RELQS_API_HOST"
+CF_ZONE="$RELQS_CF_ZONE"
 
 : "${CF_API_TOKEN:?CF_API_TOKEN must be set in deploy/.env}"
 : "${CF_ACCOUNT_ID:?CF_ACCOUNT_ID must be set in deploy/.env}"

@@ -437,7 +437,7 @@ Four pieces, and only one of them is on your machine:
 | Supabase / Upstash | managed cloud | login breaks / history stops persisting |
 
 The backend runs **locally**, published to the internet through a Cloudflare
-named tunnel at `https://edge-relativeq.facades.trade`. So if your machine is
+named tunnel at `https://<api-host>`. So if your machine is
 off, the deployed site is up but empty. That is the normal, expected behaviour
 of this setup — not a bug.
 

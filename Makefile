@@ -1,7 +1,7 @@
 # RelativeQs — task runner.
 #   Local backend  -> Docker Compose (backend/docker-compose.yml)
 #                     + a Cloudflare named tunnel publishing it at
-#                       https://edge-relativeq.facades.trade
+#                       https://<api-host>
 #   Local frontend -> Vite (npm)
 #   Cloud          -> deploy_to_cloud.sh (Vercel UI -> the tunnel above)
 #

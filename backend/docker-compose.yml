@@ -1,7 +1,7 @@
 # Local backend stack:
 #
 #   relativeq-backend      FastAPI poller + API (uvicorn on :8000 inside the net)
-#   relqs-cloudflared  Cloudflare named tunnel -> https://edge-relativeq.facades.trade
+#   relqs-cloudflared  Cloudflare named tunnel -> https://<api-host>
 #
 # Project name -> prefixes every compose-created resource (default network,
 # volumes) with "relqs_backend" instead of the directory-derived "backend".

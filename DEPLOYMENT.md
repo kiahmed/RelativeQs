@@ -4,8 +4,8 @@ How to stand up RelativeQs from scratch, and how to deploy it.
 
 | Piece | Runs on | Public address |
 |---|---|---|
-| Frontend (Vite/React SPA) | Vercel | https://relativeqs.vercel.app |
-| Backend (FastAPI + poll loop) | a local Docker container | https://edge-relativeq.facades.trade |
+| Frontend (Vite/React SPA) | Vercel | https://<frontend>.vercel.app |
+| Backend (FastAPI + poll loop) | a local Docker container | https://<api-host> |
 | Connector (cloudflared) | a local Docker container | — (outbound only) |
 | Auth + Postgres | Supabase Cloud | — |
 | Snapshot + bar history | Upstash Redis | — |
@@ -20,11 +20,11 @@ where the backend physically is.
 ```
    browser
       │
-      ├──────────────▶ https://relativeqs.vercel.app        (static SPA, Vercel)
+      ├──────────────▶ https://<frontend>.vercel.app        (static SPA, Vercel)
       │                        │
       │                        │ HTTPS + WSS
       │                        ▼
-      │            https://edge-relativeq.facades.trade      (Cloudflare edge)
+      │            https://<api-host>      (Cloudflare edge)
       │                        │
       │                        │  named tunnel 813121d1-…
       │                        ▼
@@ -135,8 +135,8 @@ CF_TUNNEL_TOKEN=          # written by 'make tunnel-create' — don't hand-edit
 RELQS_TUNNEL_ID=          # written by 'make tunnel-create' — don't hand-edit
 
 RELQS_TUNNEL_NAME=relativeq-backend-tunnel
-RELQS_API_HOST=edge-relativeq.facades.trade
-RELQS_CF_ZONE=facades.trade
+RELQS_API_HOST=<api-host>
+RELQS_CF_ZONE=<cf-zone>
 RELQS_ORIGIN_SERVICE=http://relativeq-backend:8000
 ```
 
@@ -194,7 +194,7 @@ SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co
 SUPABASE_SERVICE_KEY=...
 
 FRONTEND_URL=http://localhost:5173
-CORS_ORIGINS=https://relativeqs.vercel.app
+CORS_ORIGINS=https://<frontend>.vercel.app
 ```
 
 `CORS_ORIGINS` must list the deployed frontend's origin or the browser will be
@@ -216,7 +216,7 @@ interpolates into the connector. Verify locally, then publicly:
 
 ```bash
 curl http://127.0.0.1:8001/api/health              # published to loopback only
-curl https://edge-relativeq.facades.trade/api/health
+curl https://<api-host>/api/health
 make tunnel-status
 ```
 
@@ -249,8 +249,8 @@ Port 8001 is what compose publishes. Running uvicorn natively instead? Use 8000.
 it in sync, so you shouldn't need to edit it by hand:
 
 ```env
-VITE_RELQS_BACKEND_URL=https://edge-relativeq.facades.trade
-VITE_RELQS_WS_URL=wss://edge-relativeq.facades.trade/ws/market
+VITE_RELQS_BACKEND_URL=https://<api-host>
+VITE_RELQS_WS_URL=wss://<api-host>/ws/market
 ```
 
 ```bash

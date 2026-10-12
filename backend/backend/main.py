@@ -44,7 +44,7 @@ origins = [
 ]
 # Production origins (the deployed Vercel site, preview deploys, etc.) come from
 # CORS_ORIGINS as a comma-separated list, e.g.
-# CORS_ORIGINS="https://relativeqs.vercel.app,https://relativeqs.com"
+# CORS_ORIGINS="https://<frontend>.vercel.app,https://relativeqs.com"
 _extra_origins = os.getenv("CORS_ORIGINS", "")
 origins += [o.strip() for o in _extra_origins.split(",") if o.strip()]
 app.add_middleware(
