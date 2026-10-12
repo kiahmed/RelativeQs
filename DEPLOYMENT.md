@@ -176,7 +176,7 @@ add. In **Cloudflare → your zone → DNS**:
 
 | Type | Name | Target | Proxy |
 |---|---|---|---|
-| CNAME | `edge-relativeq` | `<RELQS_TUNNEL_ID>.cfargotunnel.com` | **Proxied** |
+| CNAME | `<api-subdomain>` | `<RELQS_TUNNEL_ID>.cfargotunnel.com` | **Proxied** |
 
 The record *must* be proxied (orange cloud) — a DNS-only record won't route
 through the tunnel. Until it exists the hostname will not resolve and
