@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import Depends, FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import logging
@@ -25,12 +25,12 @@ logger = logging.getLogger(__name__)
 print(f"DATA_PROVIDER environment value: {os.getenv('DATA_PROVIDER')}")
 print(f"ALPHAVANTAGE_KEY present: {'ALPHAVANTAGE_KEY' in os.environ and bool(os.environ.get('ALPHAVANTAGE_KEY'))}")
 
-from app.api import router
+from app.api import router, public_router
 from app.billing import router as billing_router
 from app.ws_manager import WSManager
 from app.services.market_data import MarketDataService
 from app.config import settings
-from app import alerts
+from app import alerts, auth
 
 app = FastAPI(title="RelativeQs - Backend")
 
@@ -55,7 +55,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(router, prefix="/api")
+# /api/health is open (container healthcheck); everything else needs a service
+# token or Supabase JWT. The billing router stays ungated here: its checkout
+# routes enforce their own user auth and the Stripe webhook is signature-verified.
+app.include_router(public_router, prefix="/api")
+app.include_router(router, prefix="/api", dependencies=[Depends(auth.require_api_access)])
 app.include_router(billing_router, prefix="/api")
 
 provider_mode = os.getenv("DATA_PROVIDER", "mock")
@@ -219,6 +223,11 @@ async def _poll_and_broadcast():
 
 @app.websocket("/ws/market")
 async def ws_market(ws: WebSocket):
+    # Browsers can't set headers on a WebSocket, so the token rides in ?token=.
+    token = ws.query_params.get("token", "")
+    if not (token and auth.verify_access_token(token)):
+        await ws.close(code=1008)  # policy violation
+        return
     await ws_manager.connect(ws)
     try:
         while True:

@@ -114,20 +114,34 @@ async def require_pro(user: dict = Depends(get_current_user)) -> dict:
     return {**user, "plan": plan}
 
 
-def require_premarket_access(
+def is_service_token(token: str) -> bool:
+    """True if `token` equals the configured RELQ_API_TOKEN (constant-time)."""
+    expected = settings.RELQ_API_TOKEN
+    return bool(expected) and hmac.compare_digest(token.encode(), expected.encode())
+
+
+def verify_access_token(token: str) -> bool:
+    """Non-raising check for a service token or Supabase JWT (websocket auth)."""
+    if is_service_token(token):
+        return True
+    try:
+        _decode(token)
+        return True
+    except Exception:
+        return False
+
+
+def require_api_access(
     creds: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict:
-    """Gate for /api/premarket: a service token OR a Supabase session token.
+    """Router-wide gate: RELQ_API_TOKEN (service) OR a Supabase session token.
 
-    The static PREMARKET_API_TOKEN lets a sibling app call the endpoint
-    server-to-server; browsers send their Supabase JWT as for any other
-    protected route. Any logged-in user passes (it is free-tier data).
+    The service token lets sibling apps call the backend server-to-server;
+    browsers send their Supabase JWT. Any logged-in user passes — per-route
+    dependencies (require_pro etc.) still apply on top.
     """
     if creds is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    expected = settings.PREMARKET_API_TOKEN
-    if expected and hmac.compare_digest(
-        creds.credentials.encode(), expected.encode()
-    ):
+    if is_service_token(creds.credentials):
         return {"id": "service", "email": "", "fullName": "", "plan": "service"}
     return get_current_user(creds)

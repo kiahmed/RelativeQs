@@ -10,6 +10,8 @@ from app.config import settings
 from app import auth, supabase_admin, alerts
 
 router = APIRouter()
+# Unauthenticated: container healthcheck + tunnel probe. Keep this tiny.
+public_router = APIRouter()
 logger = logging.getLogger(__name__)
 
 provider_mode = settings.DATA_PROVIDER or os.getenv("DATA_PROVIDER", "mock")
@@ -18,7 +20,7 @@ engine = ScoreEngine()
 cache = RedisCache()
 rotation_store = RotationStore()
 
-@router.get("/health")
+@public_router.get("/health")
 async def health():
     logger.info("[API] GET /health")
     response = {"status": "ok"}
@@ -90,13 +92,11 @@ async def rotation_history(limit: Optional[int] = 30):
 
 
 @router.get("/premarket")
-async def premarket(_caller: dict = Depends(auth.require_premarket_access)):
+async def premarket():
     """Overnight / pre-market board — the day's biggest Nasdaq-100 movers, the
     overnight tape (US futures, Asia semis, Europe), and how each mover sits
     vs the tape and the crowd. Descriptive pre-open context; never feeds scoring.
-    Served from the service's own ~15-min in-process cache.
-
-    Requires a Supabase session token or the PREMARKET_API_TOKEN service token."""
+    Served from the service's own ~15-min in-process cache."""
     logger.info("[API] GET /premarket")
     return await market.fetch_premarket_board()
 

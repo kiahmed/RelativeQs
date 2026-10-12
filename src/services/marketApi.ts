@@ -18,6 +18,12 @@ import {
 import { BACKEND_URL } from '../config'
 import { useAuthStore } from '../store/useAuthStore'
 
+/** fetch() that attaches the Supabase session token — the whole backend is gated. */
+function apiFetch(url: string): Promise<Response> {
+  const token = useAuthStore.getState().token
+  return fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+}
+
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
 export type MarketSnapshot = {
@@ -34,7 +40,7 @@ export type MarketSnapshot = {
 
 export async function fetchLiveQQQScore(): Promise<QQQScore | null> {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/qqq-score`)
+    const response = await apiFetch(`${BACKEND_URL}/api/qqq-score`)
     if (!response.ok) {
       console.error('Failed to fetch qqq score:', response.statusText)
       return null
@@ -49,7 +55,7 @@ export async function fetchLiveQQQScore(): Promise<QQQScore | null> {
 
 export async function fetchPrediction(): Promise<PredictionPayload | null> {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/prediction`)
+    const response = await apiFetch(`${BACKEND_URL}/api/prediction`)
     if (!response.ok) {
       console.error('Failed to fetch prediction:', response.statusText)
       return null
@@ -65,7 +71,7 @@ export async function fetchPrediction(): Promise<PredictionPayload | null> {
 /** Public AI-capex dependency index (landing-page highlight + dashboard panel). */
 export async function fetchAIDependency(): Promise<AIDependency | null> {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/ai-dependency`)
+    const response = await apiFetch(`${BACKEND_URL}/api/ai-dependency`)
     if (!response.ok) {
       console.error('Failed to fetch AI dependency:', response.statusText)
       return null
@@ -80,10 +86,7 @@ export async function fetchAIDependency(): Promise<AIDependency | null> {
 /** Overnight / pre-market board — top movers + overnight tape (pre-open context). */
 export async function fetchPremarket(): Promise<PremarketBoard | null> {
   try {
-    const token = useAuthStore.getState().token
-    const response = await fetch(`${BACKEND_URL}/api/premarket`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    const response = await apiFetch(`${BACKEND_URL}/api/premarket`)
     if (!response.ok) {
       console.error('Failed to fetch premarket board:', response.statusText)
       return null
@@ -98,7 +101,7 @@ export async function fetchPremarket(): Promise<PremarketBoard | null> {
 /** Inferred intraday rotation flow across the tracked universe. */
 export async function fetchRotation(): Promise<RotationData | null> {
   try {
-    const response = await fetch(`${BACKEND_URL}/rotation`)
+    const response = await apiFetch(`${BACKEND_URL}/rotation`)
     if (!response.ok) {
       console.error('Failed to fetch rotation:', response.statusText)
       return null
@@ -176,7 +179,7 @@ function transformBackendSignals(signals: Record<string, number>): ETFSignal[] {
 
 export async function fetchLiveMarketSnapshot(): Promise<MarketSnapshot> {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/snapshot`)
+    const response = await apiFetch(`${BACKEND_URL}/api/snapshot`)
     if (!response.ok) {
       console.error('Failed to fetch snapshot:', response.statusText)
       throw new Error(`API error: ${response.status}`)

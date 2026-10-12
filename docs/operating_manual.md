@@ -499,14 +499,15 @@ make deploy-fe       # rebuild and redeploy the frontend
 
 ## Backlog / security checklist
 
-- [x] **`GET /api/premarket` is token-gated.** It requires either a Supabase
-  session bearer (the dashboard sends one; it is login-gated) or the static
-  `PREMARKET_API_TOKEN` from `backend/.env` for server-to-server callers. A
-  sister app (EdgeLane / Simmer) consumes it for its pre-open overnight-movers
-  import: set the same value as its bearer (tracked in `docs/simmer.md` ->
-  "Overnight movers - RelativeQs import"). Unset = service access disabled.
-  After setting it, recreate the container (`make be-up`) so `env_file` is
-  re-read.
+- [x] **Backend access is token-gated.** Every `/api` route (except
+  `/api/health` and the Stripe webhook) and `/ws/market` require either a
+  Supabase session bearer (the app sends one) or the static `RELQ_API_TOKEN`
+  from `backend/.env` for server-to-server callers (websocket: `?token=`). The
+  sister app EdgeLane / Simmer uses it for its pre-open overnight-movers import
+  of `/api/premarket` (see `docs/simmer.md`). Unset = service access disabled.
+  Recreate the container (`make be-up`) after changing it so `env_file` is
+  re-read. Consequence: logged-out visitors get no live data, so the Landing
+  page's AI-dependency teaser stays hidden until they sign in.
 
 ---
 

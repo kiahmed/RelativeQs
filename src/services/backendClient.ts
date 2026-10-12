@@ -1,3 +1,5 @@
+import { useAuthStore } from '../store/useAuthStore'
+
 type SnapshotHandler = (payload: any) => void
 
 type QQQScoreHandler = (payload: any) => void
@@ -16,7 +18,10 @@ export function createBackendClient(wsUrl = 'ws://localhost:8000/ws/market') {
 
   function connect() {
     if (ws) return
-    ws = new WebSocket(wsUrl)
+    // The backend gates the websocket too; browsers can't set headers, so the
+    // Supabase token goes in the query string. Read fresh on every (re)connect.
+    const token = useAuthStore.getState().token
+    ws = new WebSocket(token ? `${wsUrl}${wsUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : wsUrl)
 
     ws.onopen = () => {
       console.debug('[backendClient] connected')
