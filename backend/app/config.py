@@ -255,6 +255,13 @@ class Settings:
     # dev/testing: when true the ribbon never auto-collapses off-hours (always
     # shows the full board regardless of market phase). Leave false in prod.
     PREMARKET_FORCE_OPEN: bool = os.getenv("PREMARKET_FORCE_OPEN", "false").lower() == "true"
+    # --- Daily persistence (Supabase tables overnight_movers_stats / daily_highlights) ---
+    # Times are US/Eastern, HH:MM, weekdays only. Needs SUPABASE_URL +
+    # SUPABASE_SERVICE_KEY and migration 0003_daily_picture.sql applied.
+    DAILY_CAPTURE_ENABLED: bool = os.getenv("DAILY_CAPTURE_ENABLED", "true").lower() == "true"
+    OVERNIGHT_CAPTURE_TIME: str = os.getenv("OVERNIGHT_CAPTURE_TIME", "09:28")
+    HIGHLIGHTS_CAPTURE_TIME: str = os.getenv("HIGHLIGHTS_CAPTURE_TIME", "10:05")
+
     # --- Backend access control ---
     # Static bearer token for server-to-server callers (e.g. EdgeLane/Simmer).
     # Every /api route (except /api/health and the Stripe webhook) and the

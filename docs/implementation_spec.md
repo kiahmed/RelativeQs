@@ -74,6 +74,8 @@ machine behind a Cloudflare tunnel; see `DEPLOYMENT.md`).
 | FR-17 | Pro CSV export of history, alert preferences | `app/api.py` | Implemented |
 | FR-18 | Whole-backend access control (service token or Supabase JWT) | `app/auth.py` | Implemented 2026-10-12 |
 | FR-19 | Tokens never appear in logs | `app/logging_config.py` | Implemented 2026-10-12 |
+| FR-21 | Persist the overnight movers once a day at 09:28 ET (one row per mover) to `overnight_movers_stats` | `app/daily_capture.py` | Implemented 2026-10-13 — needs migration 0003 applied |
+| FR-22 | Persist a daily highlights row at 10:05 ET (breadth, rotation, AI dependency last ~2 weeks, internal health, strongest sector, fragility) to `daily_highlights`, joined to the movers on `trade_date` | `app/daily_capture.py` | Implemented 2026-10-13 — needs migration 0003 applied |
 | FR-20 | Per-caller inbound rate limiting | — | **Not implemented** (see §5.3, §8) |
 
 Frontend (Vite/React SPA, `src/`): Landing, Login/Register, Pricing, About,
@@ -129,6 +131,7 @@ One failed cycle is logged and skipped; it does not stop the loop.
 | In-process pre-market cache | Overnight board | `PREMARKET_REFRESH_SECONDS` (900 s) |
 | In-process AI-dependency cache | Daily-bar index | `AI_DEPENDENCY_REFRESH_SECONDS` (3600 s) |
 | SQLite `rotation.db` | One settled rotation backtest per date | Persistent |
+| Supabase `overnight_movers_stats`, `daily_highlights` (view `daily_picture`) | The morning's movers and the day's key takeaways, keyed by `trade_date` (§3.5) | Permanent history |
 
 **Singleton rule:** two backends writing the same Upstash database clobber
 `bars:<date>`. Run exactly one.
@@ -150,6 +153,48 @@ Default tracked universe (`ETF_UNIVERSE`): `QQQ, XLK, SMH, MAGS, IGV, XLY, XLF,
 XLI, IWM, XLE, XLP, TLT`. Constituents come from a committed snapshot
 (`app/data/qqq_holdings.json`), refreshed with
 `dev-utils/refresh-qqq-holdings.py` when the index reconstitutes.
+
+### 3.5 Daily persistence
+
+Two captures run inside the poll loop (`DailyCapture.tick`, once per cycle),
+weekdays only, in US/Eastern time. Tables live in Supabase Postgres
+(`supabase/migrations/0003_daily_picture.sql`, applied by hand in the SQL
+editor like the earlier migrations) and are written with the service-role key.
+Nothing is stored on the container, which has no volumes.
+
+| | `overnight_movers_stats` | `daily_highlights` |
+|---|---|---|
+| When | **09:28 ET** (before the 09:30 open; window closes 09:43) | **10:05 ET** (window closes 10:35) |
+| Grain | one row per mover — key `(trade_date, symbol)` | one row per day — key `trade_date` |
+| Source | a forced-fresh `fetch_premarket_board` | the prediction, rotation and QQQ-score payloads the loop already holds |
+| Holds | `rank`, `gap`, `since_open`, `dir`, `sector`, `weight`, `vs_tape`, `crowd`, `sustain`, plus the board context on every row (`board_phase`, open lean, tape NQ/ES/Asia/Europe, breadth up) and `captured_at` | direction + `probability_up`, `verdict`, internal **health** score/regime, **fragility** value/level, confirmation state, correlation regime, leader, **strongest sector** (30 m momentum), **breadth** (state, equal/cap %, divergence, advancers/decliners), **AI-capex dependency** now/change and the last ~10 trading days as `ai_dependency_2w`, **rotation** per window (regime, summary, top 3 rows), and a `detail` JSON for the rest |
+
+The join key is **`trade_date`**, the Eastern calendar date. The view
+`daily_picture` returns each highlights row with that morning's movers attached
+as a JSON list (`overnight_movers`), so "what was the picture on 2026-10-13" is
+`select * from daily_picture where trade_date = '2026-10-13'`. A day with no
+movers still has its highlights row.
+
+Behaviour worth knowing:
+
+- Health, fragility level and strongest sector use the same formulas as the
+  dashboard (`deriveQQQHealth`, the fragility thresholds 0.25 / 0.5, top 30 m
+  momentum excluding QQQ), computed server-side so history matches what users saw.
+- **Idempotent:** both writes are upserts on the primary key, so a restart inside
+  the window rewrites the same rows. `captured_at` shows when the read really
+  happened.
+- **Retries:** a failed write is retried every 60 s until the window closes, then
+  logged as an error and abandoned for the day.
+- **Holidays / stale data:** the movers capture is skipped if the board's `asof`
+  date is not today; the highlights capture waits for a ready prediction, which a
+  market holiday never produces. No weekday calendar is hard-coded.
+- **Warming up:** if the engines aren't ready, columns are `null` (and
+  `direction = 'warming up'`) — never filled with made-up numbers.
+- Configuration: `DAILY_CAPTURE_ENABLED`, `OVERNIGHT_CAPTURE_TIME`,
+  `HIGHLIGHTS_CAPTURE_TIME` (see `backend/.env.example`). Needs `SUPABASE_URL` and
+  `SUPABASE_SERVICE_KEY`; without them the captures are disabled with one warning.
+- RLS is on with no policies: only the backend (service role) can read or write.
+  Add a read policy before letting the dashboard query history.
 
 ---
 
@@ -360,6 +405,7 @@ link back to their request.
 | F-3 | ~~Drop the backend's host bind mount (fixes `docker restart` on WSL2)~~ | This repo — commit `1fffb51` | Done 2026-09-05 (on `cloud-deploy` 2026-10-12) |
 | F-4 | ~~Authentication for the backend~~ (token gate: `RELQ_API_TOKEN` or Supabase JWT) | `backend/README.md` ("Add authentication and rate-limiting for production") | Done 2026-10-12 |
 | F-5 | ~~Keep websocket tokens out of logs~~ | Security review, 2026-10-12 | Done 2026-10-12 |
+| F-16 | ~~Persist the 09:28 ET overnight movers and a 10:05 ET daily highlights row to Supabase, joined on `trade_date`~~ | Owner request, 2026-10-13 — §3.5, `supabase/migrations/0003_daily_picture.sql` | Done 2026-10-13 (apply migration 0003, then `make be-up`) |
 | F-6 | **Inbound rate limiting** per token / per IP (the other half of the `backend/README.md` item) | `backend/README.md`; needed by §5.3 | Open |
 | F-7 | **Per-caller service tokens** (one per tool, individually revocable) instead of one shared `RELQ_API_TOKEN` | This spec §6 | Open — proposed |
 | F-8 | **Fix the `/rotation` fetch path.** The frontend calls `${BACKEND_URL}/rotation`; the route is `/api/rotation`, so the rotation panel gets 404 | `src/services/marketApi.ts` (`fetchRotation`) | Open — bug |
@@ -368,6 +414,8 @@ link back to their request.
 | F-11 | **Redeploy the frontend with the correct tunnel host.** `deploy/.env.production` had a stale hostname, so the deployed site cannot reach the backend until `make deploy-fe` is rerun from the corrected file | `DEPLOYMENT.md`, `deploy/.env.production` | Open — operational |
 | F-12 | **Retire the remaining Fly tooling** (`deploy_to_cloud.sh` backend path, `fly-*` Make targets, `deploy/fly.toml`, `DEPLOYMENT.md` §10) | `Makefile`, `deploy_to_cloud.sh` | Open — proposed |
 | F-13 | **Scrub old history.** Early commits still contain real hostnames, a personal email address and session links; removing them needs a history rewrite + force-push, which requires the owner's explicit approval | Security review, 2026-10-12 | Open — needs approval |
+| F-17 | **Read access to history**: a read-only API endpoint and/or RLS policy so the dashboard (or sibling tools) can query `daily_picture` | Follow-on to F-16 | Open — proposed |
+| F-18 | **Persist the SQLite rotation backtest in Supabase too** — `rotation.db` lives inside the container (no volume), so it is lost on every rebuild | `services/rotation_store.py`; observed 2026-10-13 | Open — proposed |
 | F-14 | **Real social handles** in the footer | `src/components/Footer.tsx:5` (TODO) | Open |
 | F-15 | **Make `/api/premarket` and other cached endpoints cold-start faster** (20–30 s after a restart) — e.g. warm the caches before accepting traffic | Observed 2026-10-12 | Open — proposed |
 

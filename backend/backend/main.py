@@ -31,6 +31,7 @@ from app.ws_manager import WSManager
 from app.services.market_data import MarketDataService
 from app.config import settings
 from app import alerts, auth
+from app.daily_capture import DailyCapture
 
 app = FastAPI(title="RelativeQs - Backend")
 
@@ -67,6 +68,7 @@ print(f"Using data provider mode: {provider_mode}")
 market = MarketDataService(mode=provider_mode)
 
 ws_manager = WSManager()
+daily_capture = DailyCapture(market)
 
 @app.on_event("startup")
 async def startup_event():
@@ -204,6 +206,12 @@ async def _poll_and_broadcast():
                 float(qqq_score.get("probability", 0.0) or 0.0),
                 len(ws_manager.active),
             )
+
+            # once-a-day persistence: 09:28 ET overnight movers, 10:05 ET highlights
+            try:
+                await daily_capture.tick(prediction, rotation, qqq_score)
+            except Exception:
+                logger.exception("[CAPTURE] tick failed")
 
             # email Pro subscribers on a major Nasdaq-100 breadth-state shift
             try:
