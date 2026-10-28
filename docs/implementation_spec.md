@@ -124,20 +124,45 @@ One failed cycle is logged and skipped; it does not stop the loop.
 
 ### 3.3 State and caching
 
-| Store | Holds | Lifetime |
-|---|---|---|
-| Redis `snapshot:latest`, `qqq_score:latest`, `prediction:latest`, `rotation:latest` | Latest payload per endpoint | TTL = `max(3 × POLL_INTERVAL, 60 s)` (90 s by default) |
-| Redis `bars:<date>` (`IntradayHistoryStore`) | The day's accumulated 1-minute bars | Grows through the session; **cannot be re-derived afterwards** |
-| In-process pre-market cache | Overnight board | `PREMARKET_REFRESH_SECONDS` (900 s) |
-| In-process AI-dependency cache | Daily-bar index | `AI_DEPENDENCY_REFRESH_SECONDS` (3600 s) |
-| SQLite `rotation.db` | One settled rotation backtest per date | Persistent |
-| Supabase `overnight_movers_stats`, `daily_highlights` (view `daily_picture`) | The morning's movers and the day's key takeaways, keyed by `trade_date` (§3.5) | Permanent history |
+The backend is one process, so `RedisCache` is a **two-tier cache**
+(`app/services/cache.py`): everything lives in process memory with its TTL, and
+only the per-day bar history is also written to Redis. This keeps a managed
+free plan (Upstash: 500K commands and 10 GB bandwidth per month, 250 MB data)
+well inside its limits — the previous design rewrote every payload to Redis
+each cycle and exhausted the plan.
 
-**Singleton rule:** two backends writing the same Upstash database clobber
-`bars:<date>`. Run exactly one.
+| Store | Holds | Where | Lifetime |
+|---|---|---|---|
+| `snapshot:latest`, `qqq_score:latest`, `prediction:latest`, `rotation:latest` | Latest payload per endpoint | **memory only** | TTL = `max(3 × POLL_INTERVAL, 60 s)` (90 s) |
+| `history:yahoo:1m:…` | 5-day 1-minute price pull | **memory only** | `CACHE_TTL_SECONDS` (300 s) |
+| `bars:<ET date>` (`IntradayHistoryStore`) | The day's accumulated 1-minute bars: JSON `{ISO timestamp: {symbol: close}}` | memory **+ Redis** | `HISTORY_RETENTION_DAYS` (7 d) |
+| In-process pre-market cache | Overnight board | memory | `PREMARKET_REFRESH_SECONDS` (900 s) |
+| In-process AI-dependency cache | Daily-bar index | memory | `AI_DEPENDENCY_REFRESH_SECONDS` (3600 s) |
+| SQLite `rotation.db` | One settled rotation backtest per date | container disk (lost on rebuild) | until rebuild |
+| Supabase `overnight_movers_stats`, `daily_highlights` (view `daily_picture`) | The morning's movers and the day's key takeaways (§3.5) | Postgres | permanent |
 
-API handlers read the Redis cache; only on a **cache miss** do they compute on
-demand (slow — 20–30 s cold after a restart for `/snapshot` and `/premarket`).
+Redis rules:
+
+- **Writes** to `bars:*` are throttled to one per key per `REDIS_FLUSH_SECONDS`
+  (300 s); the latest value is flushed on shutdown. A crash loses at most ~5 min
+  of bars, which the provider backfill refills.
+- **Reads** of `bars:*` hit Redis at most once per hour per key (a missing key is
+  remembered for 5 min), then come from memory.
+- **Redis is best-effort.** Down, over quota, or a malformed `REDIS_URL` → the app
+  runs memory-only; nothing raises.
+- **Budget:** roughly 300 commands/day (~10K/month) and 1–2 GB/month of
+  bandwidth, versus 500K and 10 GB on the free plan. Redis "schema" is just the
+  `bars:<date>` keys; they appear on the first flush, and a cold instance is
+  re-seeded from Yahoo (`HISTORY_BACKFILL_*`).
+- Data lost with Redis: nothing permanent. Everything in it is rebuilt from the
+  provider; the permanent history is in Supabase.
+
+**Singleton rule:** run exactly one backend per Redis database. Two processes
+would each hold their own memory tier and overwrite each other's `bars:<date>`.
+
+API handlers read the in-memory payloads; only on a **miss** (just after a
+restart, before the first poll cycle completes) do they compute on demand
+(slow — 20–30 s cold for `/snapshot` and `/premarket`).
 
 ### 3.4 Data providers
 
@@ -414,6 +439,7 @@ link back to their request.
 | F-11 | **Redeploy the frontend with the correct tunnel host.** `deploy/.env.production` had a stale hostname, so the deployed site cannot reach the backend until `make deploy-fe` is rerun from the corrected file | `DEPLOYMENT.md`, `deploy/.env.production` | Open — operational |
 | F-12 | **Retire the remaining Fly tooling** (`deploy_to_cloud.sh` backend path, `fly-*` Make targets, `deploy/fly.toml`, `DEPLOYMENT.md` §10) | `Makefile`, `deploy_to_cloud.sh` | Open — proposed |
 | F-13 | **Scrub old history.** Early commits still contain real hostnames, a personal email address and session links; removing them needs a history rewrite + force-push, which requires the owner's explicit approval | Security review, 2026-10-12 | Open — needs approval |
+| F-19 | ~~Stay inside the Upstash free tier: keep payload caches in memory, throttle Redis writes to the bar history~~ | Redis plan limit hit, 2026-10-28 — §3.3 | Done 2026-10-28 |
 | F-17 | **Read access to history**: a read-only API endpoint and/or RLS policy so the dashboard (or sibling tools) can query `daily_picture` | Follow-on to F-16 | Open — proposed |
 | F-18 | **Persist the SQLite rotation backtest in Supabase too** — `rotation.db` lives inside the container (no volume), so it is lost on every rebuild | `services/rotation_store.py`; observed 2026-10-13 | Open — proposed |
 | F-14 | **Real social handles** in the footer | `src/components/Footer.tsx:5` (TODO) | Open |

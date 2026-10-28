@@ -80,6 +80,13 @@ async def shutdown_event():
     task = getattr(app.state, "_market_task", None)
     if task:
         task.cancel()
+    # push any bar history still waiting for its throttled Redis write
+    try:
+        from app.services.cache import RedisCache
+        n = await RedisCache.flush_dirty()
+        logger.info("[CACHE] flushed %d unsaved key(s) to Redis on shutdown", n)
+    except Exception:
+        logger.exception("[CACHE] shutdown flush failed")
 
 
 def _market_closed_et(now_utc):
