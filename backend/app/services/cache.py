@@ -69,6 +69,23 @@ def _json_encoder(obj):
     return str(obj)
 
 
+def _safe_err(exc: BaseException) -> str:
+    """A log-safe description of a Redis error: the exception class plus a fixed
+    hint — never the exception text, which redis-py fills with the server's
+    host:port (a private endpoint) and could carry other connection details."""
+    name = exc.__class__.__name__
+    text = str(exc).lower()
+    if "limit" in text and any(w in text for w in ("max", "plan", "quota", "exceed", "reached")):
+        hint = "Redis quota / plan limit exceeded"
+    elif "timeout" in name.lower() or "timed out" in text:
+        hint = "timeout"
+    elif "connection" in name.lower() or "connection" in text:
+        hint = "connection problem"
+    else:
+        hint = ""
+    return f"{name} ({hint})" if hint else name
+
+
 class RedisCache:
     # Process-wide state, shared by every RedisCache() instance (the API, the poll
     # loop, the history store and the market-data service each create their own).
@@ -96,7 +113,7 @@ class RedisCache:
                 # degrade to memory-only, not 500 every request
                 if not RedisCache._url_error_logged:
                     logger.error("[CACHE] invalid REDIS_URL (%s) — running memory-only. "
-                                 "Use rediss://default:<password>@<host>:6379", exc.__class__.__name__)
+                                 "Use rediss://default:<password>@<host>:6379", _safe_err(exc))
                     RedisCache._url_error_logged = True
                 return None
         return self._client
@@ -128,7 +145,7 @@ class RedisCache:
         try:
             v = await c.get(key)
         except Exception as exc:
-            logger.warning("[CACHE] get failed for key %s: %s", key, exc)
+            logger.warning("[CACHE] get failed for key %s: %s", key, _safe_err(exc))
             self._local[key] = (now + _MISS_TTL, None)
             return None
         if isinstance(v, bytes):
@@ -145,7 +162,7 @@ class RedisCache:
         try:
             val = json.dumps(value, default=_json_encoder)
         except Exception as exc:
-            logger.warning("[CACHE] set failed for key %s: %s", key, exc)
+            logger.warning("[CACHE] set failed for key %s: %s", key, _safe_err(exc))
             return
         now = time.monotonic()
         self._local[key] = (now + max(float(expire), 1.0), val)
@@ -166,7 +183,7 @@ class RedisCache:
             self._dirty.pop(key, None)
         except Exception as exc:
             self._dirty[key] = expire
-            logger.warning("[CACHE] set failed for key %s: %s", key, exc)
+            logger.warning("[CACHE] set failed for key %s: %s", key, _safe_err(exc))
 
     @classmethod
     async def flush_dirty(cls) -> int:

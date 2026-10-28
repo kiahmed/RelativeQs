@@ -152,3 +152,32 @@ def test_malformed_redis_url_degrades_to_memory_only(monkeypatch):
         assert await c.get("bars:d") == {"n": 1}          # memory still serves it
         assert await c.get("bars:other") is None          # no client -> miss, no raise
     run(go())
+
+
+def test_error_logs_never_contain_host_or_message(rc, caplog):
+    """redis-py error text includes the server's host:port; logs must not."""
+    import logging
+    c, fake = rc
+
+    class Boom(Exception):
+        pass
+
+    secret = "private-endpoint.upstash.io:6379"
+
+    async def bad_get(key): raise Boom(f"Error 111 connecting to {secret}. Connection refused.")
+    async def bad_set(key, val, ex=None): raise Boom(f"max requests limit exceeded at {secret}")
+    fake.get, fake.set = bad_get, bad_set
+    with caplog.at_level(logging.WARNING):
+        run(c.set("bars:x", {"n": 1}, expire=10))
+        run(c.get("bars:y"))
+    log = caplog.text
+    assert secret not in log and "Error 111" not in log
+    assert "[CACHE] set failed for key bars:x" in log and "Boom" in log
+    assert "quota" in log and "connection" in log
+
+
+def test_safe_err_maps_known_failures_to_fixed_hints():
+    f = cache_mod._safe_err
+    assert f(RuntimeError("This database has reached current Fixed plan limits")) == "RuntimeError (Redis quota / plan limit exceeded)"
+    assert f(ValueError("weird")) == "ValueError"
+    assert "host" not in f(ConnectionError("cannot reach host:6379"))
