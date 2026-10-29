@@ -102,18 +102,25 @@ async def premarket():
 
 
 @public_router.get("/ai-dependency")
-async def ai_dependency():
+async def ai_dependency(response: Response):
     """OPEN to everyone (no token): the AI-capex dependency index is the public
-    teaser shown on the landing page to visitors who haven't signed up. It is a
-    structural/daily metric, read-only, and cheap — served from the cached
-    prediction when warm, otherwise computed on demand behind its own
-    in-process daily cache. Every other data route needs a sign-in or the
-    service token; keep this the only one besides /health."""
+    teaser shown on the landing page to visitors who haven't signed up.
+
+    It NEVER triggers an upstream fetch. Anonymous traffic must not be able to
+    make the origin download two years of daily bars for every basket symbol
+    (that gets the IP throttled by Yahoo, ties up the thread pool and breaks the
+    paid product's data). It serves only what the poll loop has already computed:
+    the cached prediction's copy, else the service's in-process daily cache, else
+    a "warming up" placeholder the landing page simply hides. Keep this the only
+    open data route besides /health."""
     logger.info("[API] GET /ai-dependency")
     cached = await cache.get(PREDICTION_KEY)
-    if cached and cached.get("ai_dependency"):
-        return cached["ai_dependency"]
-    return await market.fetch_ai_dependency()
+    result = (cached or {}).get("ai_dependency") or market.cached_ai_dependency()
+    if result and result.get("status") == "ok":
+        response.headers["Cache-Control"] = "public, max-age=300"   # let the CDN absorb repeats
+        return result
+    response.headers["Cache-Control"] = "no-store"
+    return result or market.empty_ai_dependency()
 
 
 # --------------------------------------------------------------------------

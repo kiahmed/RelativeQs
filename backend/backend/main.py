@@ -33,7 +33,15 @@ from app.config import settings
 from app import alerts, auth
 from app.daily_capture import DailyCapture
 
-app = FastAPI(title="RelativeQs - Backend")
+# /docs, /redoc and /openapi.json publish a map of every route (including the gated
+# ones), so they are off unless explicitly enabled for local development.
+_docs_on = os.getenv("ENABLE_API_DOCS", "false").lower() == "true"
+app = FastAPI(
+    title="RelativeQs - Backend",
+    docs_url="/docs" if _docs_on else None,
+    redoc_url="/redoc" if _docs_on else None,
+    openapi_url="/openapi.json" if _docs_on else None,
+)
 
 # Allow local frontend origins; adjust for production.
 # 5173 = `npm run dev` (Vite dev server), 4173 = `npm run preview` (built app).

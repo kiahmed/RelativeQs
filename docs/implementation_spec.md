@@ -268,7 +268,7 @@ unless noted. Responses are JSON.
 | `GET /api/rotation` | rotation flow payload (`session`, `windows`, `asof`, per-window verdicts) | Redis, ≤ one poll old | Token |
 | `GET /api/rotation/history?limit=30` | `{"history":[…]}` settled daily backtests | SQLite | Token |
 | `GET /api/premarket` | `status`, `asof`, `phase`, `minutes_to_open`, `tape{nq,es,asia,europe,breadth_up,cap_breadth_up}`, `open_lean{dir,hist_hit,basis}`, `movers[]` | in-process cache, ≤ 15 min | Token |
-| `GET /api/ai-dependency` | `status`, `dependency_now`, `change`, `change_lookback_days`, `themes[]`, `headline`, history | cached prediction or daily cache | **Open** (landing-page teaser) |
+| `GET /api/ai-dependency` | `status`, `dependency_now`, `change`, `change_lookback_days`, `themes[]`, `headline`, history | memory only — the poll loop's copy; never fetches upstream (a cold cache returns `status: warming_up`) | **Open** (landing-page teaser; `Cache-Control: public, max-age=300` when ready) |
 | `POST /api/score` | body `{"signals":{…}}` → `raw_score`, `probability`, `fragility` | computed per call | Token |
 | `GET /api/auth/me` | the verified user | — | Supabase JWT |
 | `GET /api/export/history.csv` | CSV of history | computed | Supabase JWT + Pro |
@@ -338,9 +338,15 @@ Three tiers:
    server-to-server callers. Compared in constant time. Unset means service
    access is disabled (JWT only).
 
-The open `/api/ai-dependency` route has no rate limit yet (F-6). It is read-only and
-cheap — served from an in-memory payload or a one-hour daily-bar cache — but it is the
-one public door, so it is the first thing a limiter should cover.
+The open `/api/ai-dependency` route can **never trigger an upstream fetch**: it serves
+only what the poll loop already computed (cached prediction, then the in-process daily
+cache, else a `warming_up` placeholder), so anonymous traffic cannot make the origin
+download market data or get it throttled by the data provider. Tests fire 20 concurrent
+cold calls and assert zero downloads. It still has no inbound rate limit (F-6), and its
+ready response is CDN-cacheable for 5 minutes.
+
+The interactive API docs (`/docs`, `/redoc`, `/openapi.json`) are **off** unless
+`ENABLE_API_DOCS=true`, because they publish a map of every gated route.
 
 Pro-only routes (`export/history.csv`, `alerts/*`) additionally check the user's
 `plan` in the Supabase `profiles` table. The prediction payload itself is served
@@ -451,6 +457,7 @@ link back to their request.
 | F-13 | **Scrub old history.** Early commits still contain real hostnames, a personal email address and session links; removing them needs a history rewrite + force-push, which requires the owner's explicit approval | Security review, 2026-10-12 | Open — needs approval |
 | F-19 | ~~Stay inside the Upstash free tier: keep payload caches in memory, throttle Redis writes to the bar history~~ | Redis plan limit hit, 2026-10-28 — §3.3 | Done 2026-10-28 |
 | F-20 | ~~Retry transient frontend API failures: 5 s wait, at most 2 retries, token re-read each time, then log to the console~~ (a 401 burst right after a page load with a stale/refreshing login token) | `src/services/apiRetry.ts`; observed 2026-10-28 | Done 2026-10-28 (needs `make deploy-fe`) |
+| F-21 | ~~Housekeeping from the security review: stop tracking compiled `__pycache__/*.pyc` (they embed local paths) and ignore them; turn off the public API docs by default~~ | Security review, 2026-10-28 | Done 2026-10-28 (old history still contains the .pyc files — see F-13) |
 | F-17 | **Read access to history**: a read-only API endpoint and/or RLS policy so the dashboard (or sibling tools) can query `daily_picture` | Follow-on to F-16 | Open — proposed |
 | F-18 | **Persist the SQLite rotation backtest in Supabase too** — `rotation.db` lives inside the container (no volume), so it is lost on every rebuild | `services/rotation_store.py`; observed 2026-10-13 | Open — proposed |
 | F-14 | **Real social handles** in the footer | `src/components/Footer.tsx:5` (TODO) | Open |

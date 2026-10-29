@@ -587,6 +587,16 @@ class MarketDataService:
 
         return engine.compute(opens, lasts, weights)
 
+    def cached_ai_dependency(self) -> Optional[Dict[str, Any]]:
+        """The last computed AI-dependency payload, or None. Never fetches — safe
+        for unauthenticated callers."""
+        return self._ai_dep_cache
+
+    @staticmethod
+    def empty_ai_dependency() -> Dict[str, Any]:
+        """Placeholder served before the poll loop has warmed the index."""
+        return AIDependencyEngine()._empty("warming_up")
+
     async def fetch_ai_dependency(self, force: bool = False) -> Dict[str, Any]:
         """AI-capex dependency index (structural, daily). Cached in-process and
         only recomputed every AI_DEPENDENCY_REFRESH_SECONDS — it is a slow daily

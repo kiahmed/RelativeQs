@@ -27,3 +27,7 @@ backend/*.db
 *.log
 *.log.*
 deploy/.env
+
+# Python bytecode (embeds local filesystem paths)
+__pycache__/
+*.pyc
