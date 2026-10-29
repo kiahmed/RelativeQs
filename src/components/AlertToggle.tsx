@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuthStore } from '../store/useAuthStore'
 import { useIsPro } from './ProGate'
 import { BACKEND_URL } from '../config'
+import { fetchWithRetry } from '../services/apiRetry'
 
 /**
  * Pro-only control for breadth-shift email alerts: an on/off toggle plus a
@@ -21,9 +22,15 @@ export default function AlertToggle({ compact = false }: { compact?: boolean }) 
 
   useEffect(() => {
     if (!isPro || !token) return
-    fetch(`${BACKEND_URL}/api/alerts/preferences`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    // re-read the token on every attempt: a 401 right after load usually means the
+    // refreshed token hasn't reached the store yet
+    fetchWithRetry(
+      () =>
+        fetch(`${BACKEND_URL}/api/alerts/preferences`, {
+          headers: { Authorization: `Bearer ${useAuthStore.getState().token ?? token}` },
+        }),
+      '/api/alerts/preferences',
+    )
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (d) setEnabled(Boolean(d.alerts_enabled))

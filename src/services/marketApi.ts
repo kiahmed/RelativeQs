@@ -17,11 +17,15 @@ import {
 } from '../data/marketSignals'
 import { BACKEND_URL } from '../config'
 import { useAuthStore } from '../store/useAuthStore'
+import { fetchWithRetry } from './apiRetry'
 
 /** fetch() that attaches the Supabase session token — the whole backend is gated. */
 function apiFetch(url: string): Promise<Response> {
-  const token = useAuthStore.getState().token
-  return fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  // the token is re-read on every attempt, so a retry picks up a refreshed one
+  return fetchWithRetry(() => {
+    const token = useAuthStore.getState().token
+    return fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  }, new URL(url, 'http://x').pathname)
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
@@ -101,7 +105,7 @@ export async function fetchPremarket(): Promise<PremarketBoard | null> {
 /** Inferred intraday rotation flow across the tracked universe. */
 export async function fetchRotation(): Promise<RotationData | null> {
   try {
-    const response = await apiFetch(`${BACKEND_URL}/rotation`)
+    const response = await apiFetch(`${BACKEND_URL}/api/rotation`)
     if (!response.ok) {
       console.error('Failed to fetch rotation:', response.statusText)
       return null
