@@ -72,7 +72,7 @@ machine behind a Cloudflare tunnel; see `DEPLOYMENT.md`).
 | FR-15 | Long-horizon QQQ score from daily bars (`/qqq-score`) | `core/qqq_score.py` | Implemented |
 | FR-16 | Accounts, sessions, Pro plan: Supabase Auth, Stripe checkout + webhook | `app/auth.py`, `app/billing.py` | Implemented |
 | FR-17 | Pro CSV export of history, alert preferences | `app/api.py` | Implemented |
-| FR-18 | Whole-backend access control (service token or Supabase JWT) | `app/auth.py` | Implemented 2026-10-12 |
+| FR-18 | Whole-backend access control (service token or Supabase JWT), except `/api/health` and the public `/api/ai-dependency` teaser | `app/auth.py` | Implemented 2026-10-12 |
 | FR-19 | Tokens never appear in logs | `app/logging_config.py` | Implemented 2026-10-12 |
 | FR-21 | Persist the overnight movers once a day at 09:28 ET (one row per mover) to `overnight_movers_stats` | `app/daily_capture.py` | Implemented 2026-10-13 — needs migration 0003 applied |
 | FR-22 | Persist a daily highlights row at 10:05 ET (breadth, rotation, AI dependency last ~2 weeks, internal health, strongest sector, fragility) to `daily_highlights`, joined to the movers on `trade_date` | `app/daily_capture.py` | Implemented 2026-10-13 — needs migration 0003 applied |
@@ -268,7 +268,7 @@ unless noted. Responses are JSON.
 | `GET /api/rotation` | rotation flow payload (`session`, `windows`, `asof`, per-window verdicts) | Redis, ≤ one poll old | Token |
 | `GET /api/rotation/history?limit=30` | `{"history":[…]}` settled daily backtests | SQLite | Token |
 | `GET /api/premarket` | `status`, `asof`, `phase`, `minutes_to_open`, `tape{nq,es,asia,europe,breadth_up,cap_breadth_up}`, `open_lean{dir,hist_hit,basis}`, `movers[]` | in-process cache, ≤ 15 min | Token |
-| `GET /api/ai-dependency` | `status`, `dependency_now`, `change`, `change_lookback_days`, `themes[]`, `headline`, history | cached prediction or daily cache | Token |
+| `GET /api/ai-dependency` | `status`, `dependency_now`, `change`, `change_lookback_days`, `themes[]`, `headline`, history | cached prediction or daily cache | **Open** (landing-page teaser) |
 | `POST /api/score` | body `{"signals":{…}}` → `raw_score`, `probability`, `fragility` | computed per call | Token |
 | `GET /api/auth/me` | the verified user | — | Supabase JWT |
 | `GET /api/export/history.csv` | CSV of history | computed | Supabase JWT + Pro |
@@ -322,8 +322,14 @@ Guidance for integrators:
 
 ## 6. Access control
 
-Every `/api` route except `/api/health` and the Stripe webhook, and the
-websocket, require **one of**:
+Three tiers:
+
+- **Open** (no token): `GET /api/health` (container healthcheck) and
+  `GET /api/ai-dependency` (the AI-stack teaser the landing page shows to visitors
+  who haven't signed up). Nothing else is open; adding to this set is a deliberate
+  decision, enforced by `test_routes_are_gated_except_the_open_ones`.
+- **Signed in or service token:** every other `/api` route (bar the Stripe webhook,
+  which is signature-verified) and the websocket require **one of**:
 
 1. **A Supabase session token** (`Authorization: Bearer <JWT>`) — what the SPA
    sends after login. Verified as HS256 (`SUPABASE_JWT_SECRET`) or ES256/RS256
@@ -331,6 +337,10 @@ websocket, require **one of**:
 2. **The service token** `RELQ_API_TOKEN` — a static shared secret for
    server-to-server callers. Compared in constant time. Unset means service
    access is disabled (JWT only).
+
+The open `/api/ai-dependency` route has no rate limit yet (F-6). It is read-only and
+cheap — served from an in-memory payload or a one-hour daily-bar cache — but it is the
+one public door, so it is the first thing a limiter should cover.
 
 Pro-only routes (`export/history.csv`, `alerts/*`) additionally check the user's
 `plan` in the Supabase `profiles` table. The prediction payload itself is served
@@ -435,7 +445,7 @@ link back to their request.
 | F-7 | **Per-caller service tokens** (one per tool, individually revocable) instead of one shared `RELQ_API_TOKEN` | This spec §6 | Open — proposed |
 | F-8 | ~~Fix the `/rotation` fetch path~~ (the frontend called `/rotation`; the route is `/api/rotation`, so the rotation panel got 404) | `src/services/marketApi.ts` (`fetchRotation`) | Done 2026-10-28 (needs `make deploy-fe`) |
 | F-9 | **Server-side Pro filtering** of `/api/prediction` (today Pro panels are hidden in the UI only) | This spec §6 | Open — needs a product decision |
-| F-10 | **Public teaser decision.** With the whole backend gated, the Landing page's AI-dependency teaser is blank for logged-out visitors. Either exempt `/api/ai-dependency` or serve a static/cached copy | `src/pages/Landing.tsx`, `main.py` router gate | Open — needs a product decision |
+| F-10 | ~~Public teaser: serve the AI-dependency data to logged-out Landing visitors~~ — decided 2026-10-28: only `/api/ai-dependency` is open; every other data route stays gated | `src/pages/Landing.tsx`, `app/api.py` (`public_router`) | Done 2026-10-28 (rate limiting for the open route is F-6) |
 | F-11 | **Redeploy the frontend with the correct tunnel host.** `deploy/.env.production` had a stale hostname, so the deployed site cannot reach the backend until `make deploy-fe` is rerun from the corrected file | `DEPLOYMENT.md`, `deploy/.env.production` | Open — operational |
 | F-12 | **Retire the remaining Fly tooling** (`deploy_to_cloud.sh` backend path, `fly-*` Make targets, `deploy/fly.toml`, `DEPLOYMENT.md` §10) | `Makefile`, `deploy_to_cloud.sh` | Open — proposed |
 | F-13 | **Scrub old history.** Early commits still contain real hostnames, a personal email address and session links; removing them needs a history rewrite + force-push, which requires the owner's explicit approval | Security review, 2026-10-12 | Open — needs approval |

@@ -42,7 +42,12 @@ def test_websocket_verify_token(monkeypatch):
     assert auth.verify_access_token("") is False
 
 
-def test_routes_are_gated_except_health():
+# The ONLY unauthenticated data routes: the container healthcheck and the landing-page
+# teaser. Adding to this set is a deliberate product/security decision.
+OPEN_ROUTES = {"/api/health", "/api/ai-dependency"}
+
+
+def test_routes_are_gated_except_the_open_ones():
     from backend.main import app
     from fastapi.routing import APIRoute
     open_paths = set()
@@ -51,4 +56,30 @@ def test_routes_are_gated_except_health():
             deps = {d.call for d in r.dependant.dependencies}
             if auth.require_api_access not in deps and not r.path.startswith("/api/billing"):
                 open_paths.add(r.path)
-    assert open_paths == {"/api/health"}
+    assert open_paths == OPEN_ROUTES
+
+
+def test_open_ai_dependency_has_no_auth_dependency_and_serves_the_teaser(monkeypatch):
+    """The teaser must work for a logged-out visitor (and a stale token header can't
+    matter: the route declares no auth dependency at all)."""
+    import asyncio
+    from backend.main import app
+    from fastapi.routing import APIRoute
+    from app import api
+
+    route = next(r for r in app.routes if isinstance(r, APIRoute) and r.path == "/api/ai-dependency")
+    assert route.dependant.dependencies == []
+
+    async def fake_compute():
+        return {"status": "ok", "dependency_now": 0.5}
+
+    async def cold(key):
+        return None
+
+    monkeypatch.setattr(api.market, "fetch_ai_dependency", fake_compute)
+    monkeypatch.setattr(api.cache, "get", cold)
+    assert asyncio.run(api.ai_dependency())["dependency_now"] == 0.5
+
+    # a gated sibling does carry the gate
+    gated = next(r for r in app.routes if isinstance(r, APIRoute) and r.path == "/api/prediction")
+    assert auth.require_api_access in {d.call for d in gated.dependant.dependencies}

@@ -101,11 +101,14 @@ async def premarket():
     return await market.fetch_premarket_board()
 
 
-@router.get("/ai-dependency")
+@public_router.get("/ai-dependency")
 async def ai_dependency():
-    """Public AI-capex dependency index — structural/daily metric for the
-    landing-page highlight. Served from the cached prediction when warm,
-    otherwise computed on demand (its own in-process daily cache keeps it cheap)."""
+    """OPEN to everyone (no token): the AI-capex dependency index is the public
+    teaser shown on the landing page to visitors who haven't signed up. It is a
+    structural/daily metric, read-only, and cheap — served from the cached
+    prediction when warm, otherwise computed on demand behind its own
+    in-process daily cache. Every other data route needs a sign-in or the
+    service token; keep this the only one besides /health."""
     logger.info("[API] GET /ai-dependency")
     cached = await cache.get(PREDICTION_KEY)
     if cached and cached.get("ai_dependency"):
